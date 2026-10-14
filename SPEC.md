@@ -418,7 +418,22 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
      | **k 5, weight 0.5** | **0.80 / 0.69** | **0.75 / 0.62** | **0.65 / 0.52** |
      | vector only | 0.80 / 0.70 | 0.80 / 0.65 | 0.65 / 0.56 |
 
-     k = 5 is better or equal on every set. **Hybrid still doesn't beat vector-only** on these sets with mxbai-embed-large: the keyword list adds nothing measurable there, and on paraphrases it costs one question on the Standard Ebooks set. It's kept because it finds rare exact identifiers that embeddings blur, and because it keeps search working when Ollama is down (§8.3 step 3). A confidence gate (use keyword hits only when they're strong or agree with the vector list) is the next candidate (§14).
+     k = 5 is better or equal on every set. **Hybrid still doesn't beat vector-only** on these sets with mxbai-embed-large: the keyword list adds nothing measurable there, and on paraphrases it costs one question on the Standard Ebooks set. It's kept because it finds rare exact identifiers that embeddings blur, and because it keeps search working when Ollama is down (§8.3 step 3).
+   - **Gated fusion was tried and rejected** (2026-10-14), recall@5 / MRR:
+
+     | Strategy | Compose (mxbai) | Art of War SE | Art of War Gutenberg | Compose (nomic) |
+     |---|---|---|---|---|
+     | vector-only | 0.80 / 0.70 | 0.80 / 0.65 | 0.65 / 0.56 | 0.70 / 0.67 |
+     | **RRF (kept)** | 0.80 / 0.69 | 0.75 / 0.62 | 0.65 / 0.52 | **0.75** / 0.65 |
+     | agree: keyword ranks only re-rank the vector top 20 | 0.80 / 0.68 | 0.75 / 0.60 | 0.65 / 0.52 | 0.75 / 0.60 |
+     | rare: agree, unless a query term is in ≤ 0.2% of paragraphs | 0.80 / 0.68 | 0.75 / 0.60 | 0.65 / 0.52 | 0.75 / 0.65 |
+     | rare-only: keywords only when a query term is rare | 0.80 / 0.69 | 0.75 / 0.63 | 0.65 / 0.52 | 0.70 / 0.67 |
+
+     - None beats RRF anywhere.
+     - The harm isn't keyword-only noise: `agree` still loses the same question. Keyword agreement re-orders the vector list's own candidates, lifting a wrong one just above the answer.
+     - Rare-term tests can't help: paraphrases use unusual words by design ("feats", "monarch's"), so the test fires exactly where keywords are noise.
+     - RRF is the only strategy that never trails vector-only by more than one question, and the only one that rescues a weaker model (nomic: an API-name question the vectors miss).
+     - The code was removed rather than kept as unused options.
    - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion (weight 1). It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
    - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text, `Hit.summaryLevel` to its level, and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
    - **Summary hits are added on top of the k passages, never instead of them.** A search returns the same k passages it would without summaries, plus up to **2** summary hits that rank within the first k positions, in score order. So a result has at most k + 2 hits.
@@ -614,7 +629,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
 - Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
 - **Boilerplate chapters outside front matter:** front matter (chapter 0) is down-weighted (§8.3). EPUB boilerplate that comes as its own TOC chapter isn't: Standard Ebooks' "Titlepage", "Imprint", "Colophon" and "Uncopyright", and Gutenberg's license. Candidates: a title list, or treating tiny leading/trailing chapters as front/back matter.
-- **Confidence-gated fusion:** with mxbai-embed-large, hybrid never beat vector-only on three sets (§8.3). Candidates: use keyword hits only when they also appear in the vector top N, or when the query has rare terms (high IDF). Evaluate against all sets before changing the default.
+- **Fusion beyond RRF:** agreement and rare-term gates were tried and rejected (§8.3). What's left needs signals the index doesn't have yet: a cross-encoder re-ranker (a small model scoring query–paragraph pairs) or learned weights from a much larger evaluation set. Both cost more than they're likely to gain at 60 questions.
 - **OCR text layers** (e.g. CtCI) carry recognition errors: `ot` for `of`, `II` for `//`, `�`. Possible later steps: report an OCR-quality score at index time, and treat lines that are only dot leaders plus `pg N` (CtCI's printed cross-references) as noise.
 - **Code without line numbers** (Kotlin for Android Developers, CtCI) stays prose paragraphs. Detecting it would need layout cues such as a monospaced font, through PDFBox's text positions. EPUB marks code explicitly (§16.3).
 - Store phrase vectors (instead of computing them at query time) if the cost of finding the closest phrase shows up in profiling. Deferred.
