@@ -126,6 +126,7 @@ rag search --db <file> -q "<question or text>" [options]
 | `--embed-model` | the model the books were embedded with | Override the query embedding model. |
 | `--ollama-url` | `http://localhost:11434` | Ollama server. |
 | `--lexical-weight`, `--rrf-k` | `0.5`, `5` | Fusion settings, for calibration; see SPEC.md §8.3. |
+| `--no-summaries` | off | Search paragraphs only, even if the book has summaries. |
 
 How a search works:
 
@@ -190,6 +191,24 @@ no content words with its answer). Sets in [src/test/resources/eval/](src/test/r
 | `compose-internals.jsonl` | *Jetpack Compose internals* (PDF, not in the repo) | 0.80 |
 | `art-of-war-se.jsonl` | *The Art of War*, Standard Ebooks (EPUB, in the repo) | 0.75 |
 
+### `rag summarize`: chapter and book summaries (optional)
+
+```bash
+ollama pull llama3.2:3b           # ~2.0 GB, once
+rag summarize --db <file> --book <id> [--summary-model llama3.2:3b] [--redo]
+```
+
+Writes summaries with a small local model: one per ~1,500-token section, one per chapter, and one
+for the whole book. They let search answer "what is chapter 5 about?" or "what does this book
+cover?", which no single paragraph answers. Summaries are embedded with the book's own embedding
+model and show up in search as `[SUMMARY section|chapter|book]` hits (at most 2 per query) with the
+summary text and the best paragraph inside it.
+
+- For a 205-page book: 62 summaries in about 4 minutes on an Apple M4 Pro, +156 KB of storage.
+  The model uses ~2.5 GB of RAM, only while summarizing.
+- Interrupted runs resume where they stopped; `--redo` or another model starts over.
+- `rag dump --db <file> --book <id> --summaries` prints them; `rag search --no-summaries` leaves them out.
+
 ### `rag books`: list books
 
 ```bash
@@ -203,6 +222,7 @@ Shows each book's id, title, how its chapters were found, and its embedding stat
 ```bash
 rag dump --db <file> --book <id>                 # list chapters with page ranges
 rag dump --db <file> --book <id> --chapter 3     # print chapter 3's text
+rag dump --db <file> --book <id> --summaries     # print its summaries
 ```
 
 Chapters are numbered in reading order: `0` is the front matter (cover, preface…), then `1, 2, …`.
@@ -229,6 +249,7 @@ Measured on a 205-page technical book (374 KB of text, 1,649 paragraphs):
 | RAM for vector search (1-bit vectors) | ~106 KB |
 | Ollama with `mxbai-embed-large` (default) | ~687 MB while loaded, needed while indexing and to embed each query |
 | Ollama with `nomic-embed-text` | ~370 MB while loaded |
+| Summaries (optional) | +156 KB disk, ~4 KB RAM for search; `llama3.2:3b` uses 2.5 GB only while summarizing |
 
 Compact vectors agree with full-precision search on 89% of the top-10 results, and give the same
 recall on the evaluation set; see SPEC.md §11.
@@ -246,6 +267,7 @@ environment variables:
 |---|---|
 | `RAG_OLLAMA=1` | Tests against a real local Ollama (`mxbai-embed-large` and `nomic-embed-text` must be pulled). `RAG_OLLAMA_URL` overrides the server URL. |
 | `RAG_BOOK_PDF=/path/to/book.pdf` | Tests against *Jetpack Compose internals* (Jorge Castillo, Leanpub, 2022-11-20). The book is copyrighted and isn't part of this repository; use your own copy. |
+| `RAG_SUMMARY_MODEL=llama3.2:3b` | With `RAG_BOOK_PDF` and `RAG_OLLAMA=1`: summarizes the book and checks word caps, grounding and summary hits (~4 minutes). |
 | `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
 
 The EPUB tests use two public-domain editions of *The Art of War* committed in
@@ -268,6 +290,7 @@ src/main/kotlin/rag/
   structure/         chapter detection (bookmarks, TOC), segmentation
   embed/             Ollama client, truncation and quantization
   index/             unit keys, indexing and embedding
+  summarize/         summary tree, prompts, Ollama summarizer
   store/             SQLite schema and queries
   search/            exact, BM25 and vector search, rank fusion
 ```
@@ -278,8 +301,8 @@ src/main/kotlin/rag/
   search, CLI.
 - **Done:** a calibrated evaluation set (`rag eval`), which chose the default model, the vector
   size and the fusion weights.
-- **Planned (Phase 6, optional):** chapter and book summaries made by a small local model, so
-  questions like "what is chapter 5 about?" can be answered. Design in SPEC.md §5.7.
+- **Done (Phase 6, optional):** chapter and book summaries made by a small local model, so
+  questions like "what is chapter 5 about?" can be answered (SPEC.md §5.7).
 - **Planned (Phase 7):** desktop and Android from one code base, sharing the same index file,
   with on-device embeddings through ONNX Runtime. Design in SPEC.md §15.
 - **Done (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own

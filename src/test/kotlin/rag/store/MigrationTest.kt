@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 class MigrationTest {
 
     @Test
-    fun `a version 1 database gets formats, page kinds and page labels`(@TempDir dir: File) {
+    fun `a version 1 database migrates to the current version`(@TempDir dir: File) {
         val path = File(dir, "v1.db").path
         // The version 1 shape of the two tables that changed.
         DriverManager.getConnection("jdbc:sqlite:$path").use { c ->
@@ -27,6 +27,11 @@ class MigrationTest {
         SqliteStore(path).use { store ->
             assertEquals(listOf("1", "2"), store.pageLabels(1))
             assertEquals("pdf" to "pdf", store.book(1)!!.let { it.format to it.pageKind })
+            assertEquals("none", store.book(1)!!.summaryStatus)
+            val summaryColumns = store.connection.createStatement().use { st ->
+                st.executeQuery("PRAGMA table_info(summary)").use { rs -> buildList { while (rs.next()) add(rs.getString("name")) } }
+            }
+            kotlin.test.assertTrue("char_start" in summaryColumns && "prompt" in summaryColumns && "depth" in summaryColumns)
             val version = store.connection.createStatement().use { s -> s.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } }
             assertEquals(SqliteStore.SCHEMA_VERSION, version)
         }

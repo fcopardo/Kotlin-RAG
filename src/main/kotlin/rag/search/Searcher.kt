@@ -51,6 +51,8 @@ data class Hit(
     /** "pdf", "print" or "location": how to read the page labels (SPEC §16.5). */
     val pageKind: String,
     val summary: String? = null,
+    /** For SUMMARY hits: "section", "group", "chapter" or "book". */
+    val summaryLevel: String? = null,
 )
 
 /**
@@ -69,11 +71,14 @@ class Searcher(
     private val lexicalWeight: Double = LEXICAL_WEIGHT,
     /** Reciprocal rank fusion constant: smaller makes rank matter more (SPEC §8.3). */
     private val rrfK: Int = RRF_K,
+    /** Whether summaries (SPEC §5.7) take part in search when a book has them. */
+    private val includeSummaries: Boolean = true,
 ) {
     private val texts = object : LinkedHashMap<Long, String>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
     }
     private val binaryIndexes = HashMap<Long, BinaryIndex>()
+    private val summaryIndexes = HashMap<Long, BinaryIndex>()
     private val pageLabels = HashMap<Long, List<String>>()
 
     private class BinaryIndex(val unitIds: LongArray, val bits: Array<LongArray>)
@@ -96,27 +101,73 @@ class Searcher(
         else books.flatMap { b -> store.ftsSearch("para_fts", context.terms, b.id, limit = n) }
         val dense = vector?.let { v -> vectorSearch(v, books, n) }.orEmpty()
 
+        val summaries = if (includeSummaries) summaryRanking(context, books, mode, n) else emptyList()
+
         val lexicalSet = lexical.toSet()
         val denseSet = dense.toSet()
-        val fused = Fusion.rrf(listOf(lexical, dense), k = rrfK, weights = listOf(lexicalWeight, 1.0))
-        val ranked = fused.map { (id, score) ->
-            val type = when {
-                id in lexicalSet && id in denseSet -> MatchType.HYBRID
-                id in lexicalSet -> MatchType.LEXICAL
-                else -> MatchType.VECTOR
-            }
-            Triple(id, score, type)
-        }
+        // Paragraphs and summaries are fused together: keys say which is which.
+        val fused = Fusion.rrf(
+            listOf(lexical.map { Key.Paragraph(it) }, dense.map { Key.Paragraph(it) }, summaries.map { Key.Summary(it) }),
+            k = rrfK, weights = listOf(lexicalWeight, 1.0, 1.0),
+        )
 
         val seen = exact.map { it.second }.toMutableSet()
         val hits = exact.map { it.first }.toMutableList()
-        for ((id, score, type) in ranked) {
+        var summaryHits = 0
+        for ((key, score) in fused) {
             if (hits.size >= k) break
-            if (!seen.add(id)) continue
-            val paragraph = store.unit(id) ?: continue
-            hits += hit(paragraph, null, type, score, context)
+            when (key) {
+                is Key.Paragraph -> {
+                    if (!seen.add(key.id)) continue
+                    val paragraph = store.unit(key.id) ?: continue
+                    val type = when {
+                        key.id in lexicalSet && key.id in denseSet -> MatchType.HYBRID
+                        key.id in lexicalSet -> MatchType.LEXICAL
+                        else -> MatchType.VECTOR
+                    }
+                    hits += hit(paragraph, null, type, score, context)
+                }
+                is Key.Summary -> {
+                    if (summaryHits >= MAX_SUMMARY_HITS) continue
+                    summaryHit(key.id, score, context)?.let { hits += it; summaryHits++ }
+                }
+            }
         }
         return hits.take(k)
+    }
+
+    private sealed interface Key {
+        data class Paragraph(val id: Long) : Key
+        data class Summary(val id: Long) : Key
+    }
+
+    // --- summaries (SPEC §5.7, §8.3) ---
+
+    /** Summary ids, best first: their own fusion of keyword and vector rankings. */
+    private fun summaryRanking(context: QueryContext, books: List<BookRow>, mode: Mode, n: Int): List<Long> {
+        val withSummaries = books.filter { it.summaryStatus != "none" }
+        if (withSummaries.isEmpty()) return emptyList()
+        val lexical = if (mode == Mode.VECTOR || context.terms == null) emptyList()
+        else withSummaries.flatMap { store.summaryFtsSearch(context.terms, it.id, limit = n) }
+        val dense = context.vector?.let { v ->
+            denseSearch(v, withSummaries, n, { id -> summaryIndex(id) }, store::summaryVectors)
+        }.orEmpty()
+        return Fusion.rrf(listOf(lexical, dense), k = rrfK, weights = listOf(lexicalWeight, 1.0)).map { it.first }
+    }
+
+    /** A SUMMARY hit: the summary, the best paragraph inside its span, and its chapter. */
+    private fun summaryHit(id: Long, score: Double, context: QueryContext): Hit? {
+        val summary = store.summary(id) ?: return null
+        val paragraph = context.terms?.let { store.paragraphsInSpan(it, summary.bookId, summary.charStart, summary.charEnd).firstOrNull() }
+            ?.let(store::unit)
+            ?: store.firstParagraphInSpan(summary.bookId, summary.charStart, summary.charEnd)
+            ?: return null
+        return hit(paragraph, null, MatchType.SUMMARY, score, context).copy(summary = summary.text, summaryLevel = summary.level)
+    }
+
+    private fun summaryIndex(bookId: Long): BinaryIndex = summaryIndexes.getOrPut(bookId) {
+        val rows = store.summaryBinaryVectors(bookId)
+        BinaryIndex(LongArray(rows.size) { rows[it].first }, Array(rows.size) { rows[it].second })
     }
 
     // --- exact path ---
@@ -171,7 +222,17 @@ class Searcher(
     }
 
     /** Binary Hamming first pass, then int8 rescoring of the closest candidates. Unit ids, best first. */
-    private fun vectorSearch(full: FloatArray, books: List<BookRow>, n: Int): List<Long> {
+    private fun vectorSearch(full: FloatArray, books: List<BookRow>, n: Int): List<Long> =
+        denseSearch(full, books, n, ::binaryIndex, store::vectors)
+
+    /** Binary first pass over [indexOf], then int8 rescoring of the closest candidates from [fetch]. */
+    private fun denseSearch(
+        full: FloatArray,
+        books: List<BookRow>,
+        n: Int,
+        indexOf: (Long) -> BinaryIndex,
+        fetch: (Collection<Long>) -> List<rag.store.StoredVector>,
+    ): List<Long> {
         // Measured on the eval set: 200 candidates make 1-bit + int8 match float search; 100 lost a hit.
         val rescoreCount = maxOf(10 * n / 4, 200)
         val scored = books.filter { it.embedModel != null && it.embedDim != null }.flatMap { book ->
@@ -179,7 +240,7 @@ class Searcher(
             if (dim > full.size) throw RagException.ModelMismatch("Book ${book.id} has $dim-dim vectors; the query has ${full.size}")
             val query = Quantizer.truncate(full, dim)
             val queryBits = Quantizer.bits(query)
-            val index = binaryIndex(book.id)
+            val index = indexOf(book.id)
 
             // Keep the rescoreCount smallest Hamming distances with a bounded max-heap.
             val heap = PriorityQueue<Pair<Int, Long>>(compareByDescending { it.first })
@@ -187,7 +248,7 @@ class Searcher(
                 heap += Quantizer.hamming(queryBits, index.bits[i]) to index.unitIds[i]
                 if (heap.size > rescoreCount) heap.poll()
             }
-            store.vectors(heap.map { it.second }).map { v -> v.unitId to Quantizer.dot(query, v.int8, v.scale) }
+            fetch(heap.map { it.second }).map { v -> v.unitId to Quantizer.dot(query, v.int8, v.scale) }
         }
         return scored.sortedByDescending { it.second }.take(n).map { it.first }
     }
@@ -255,5 +316,8 @@ class Searcher(
          * k = 5 was better or equal everywhere (Compose 0.80/MRR 0.69, Art of War SE 0.75, Gutenberg 0.65).
          */
         const val RRF_K = 5
+
+        /** Summary hits per query, so passages aren't crowded out (SPEC §8.3). */
+        const val MAX_SUMMARY_HITS = 2
     }
 }

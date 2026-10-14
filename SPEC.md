@@ -58,7 +58,7 @@ The original spec used "index" for two different things. Use these terms instead
 rag index  --file <pdf|epub> --db <file> [--toc-pages <a-b[,c-d]>] [--location-size 2000] [--locale en] [--reindex] [--no-embed]
            [--ollama-url http://localhost:11434] [--embed-model mxbai-embed-large] [--embed-dim 512]
 rag embed  --db <file> --book <bookId> [--ollama-url …] [--embed-model …] [--embed-dim …]  # (re)build embeddings only
-rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7
+rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7; prints progress
 rag eval   --db <file> --set <questions.jsonl> [--book <bookId>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
 rag books  --db <file>                                                                  # list indexed books
 rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json] [--lexical-weight 0.5] [--rrf-k 5]
@@ -164,7 +164,7 @@ Only one level of chapters is supported in v1. Nested entries (`1.1 …`) are tr
 - **Resumable:** embeddings are written in their own transactions, one per batch, after the structural data is committed. A paragraph without a row in `embedding` gets embedded on the next `rag embed` run. A book counts as fully indexed only when every paragraph has an embedding (`book.embed_status = 'complete'`).
 - Retry policy: up to 3 tries with exponential backoff (1s, 2s, 4s) per batch. After that, stop with exit code 5. The structure stays committed and `embed_status` stays `partial`.
 
-### 5.7 Summaries (Phase 6, optional, RAPTOR-style)
+### 5.7 Summaries (Phase 6, optional, RAPTOR-style; built)
 
 **Why.** Paragraph vectors answer "where does the book say X?". They can't answer "what is chapter 5 about?" or "what does this book cover?", because no single paragraph says that. Summaries can. They're made once at index time, so a query costs the same as before: one more small binary scan.
 
@@ -205,7 +205,7 @@ User prompt per level (`{…}` are filled in):
 
 #### 5.7.4 Storage and embedding
 - Summaries are generated text, so they're stored **with** their text (`summary` table, §7). This is the one exception to "text stored once".
-- Each summary is embedded like a paragraph. The input is `documentPrefix + chapterTitle + "\n" + summaryText` (the book title for the book summary). It's truncated and quantized like paragraphs (512 dimensions, int8 + bits) and indexed in `summary_fts`.
+- Each summary is embedded like a paragraph, with **the book's own embedding model and dimension**, so summary and paragraph vectors are comparable. A book without embeddings gets keyword-searchable summaries only. The input is `documentPrefix + chapterTitle + "\n" + summaryText` (the book title for the book summary). It's truncated and quantized like paragraphs (512 dimensions, int8 + bits) and indexed in `summary_fts`.
 - `book.summary_model`, `book.summary_prompt` and `book.summary_status` (`none` / `partial` / `complete`) track progress.
 
 #### 5.7.5 Resuming, idempotency, invalidation
@@ -214,9 +214,12 @@ User prompt per level (`{…}` are filled in):
 - `--redo`, or a different `--summary-model`, deletes the book's summaries first.
 - `rag index --reindex` deletes them with the book (cascade), together with their FTS rows.
 
-#### 5.7.6 Cost (to be measured in Phase 6)
-- **Time:** *Jetpack Compose internals* has about 94k tokens of text, giving about 65 section summaries, ~8 group/chapter summaries and 1 book summary. That's roughly 75 model calls, about 5–10 minutes with `llama3.2:3b` on an Apple-silicon laptop.
-- **Storage:** about 75 × (≤ 150 words ≈ 1 KB text + 580 B vectors), around **120 KB**. In RAM during search: 75 × 64 B ≈ **5 KB** of binary vectors.
+#### 5.7.6 Cost (measured 2026-10-14, *Jetpack Compose internals*, `llama3.2:3b`, Apple M4 Pro)
+- **Calls and time:** 62 summaries (53 section, 8 chapter, 1 book) in **220 s**. The estimate was 75 calls and 5–10 minutes.
+  - **No group level was needed:** "4. Compose UI" has 14 sections whose summaries total ~2,200 tokens, under the 2,500 limit. The estimate of one group level was wrong.
+- **Memory:** `llama3.2:3b` used **2.5 GB** in Ollama (estimated 2.6–2.8 GB), plus `mxbai-embed-large` (687 MB) to embed the summaries. Peak ~3.2 GB, only during `rag summarize`.
+- **Storage:** +156 KB (2.96 → 3.12 MB): 47 KB of summary text in `summary` (116 KB with vectors) plus 56 KB of `summary_fts`. In RAM during search: 62 × 64 B ≈ **4 KB** of binary vectors.
+- **Word caps held:** sections at most 120, chapters at most 198 of 200, the book 170 of 250.
 
 ## 6. Unit keys and master record
 
@@ -335,7 +338,7 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
 
-**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 will be **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6.
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 is **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6 (detected by its missing `char_start` column).
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -385,6 +388,7 @@ data class Hit(
   val bookId: Long,
   val bookTitle: String?,
   val summary: String? = null,       // set for SUMMARY hits (§5.7)
+  val summaryLevel: String? = null,  // "section" | "group" | "chapter" | "book" for SUMMARY hits
 )
 data class UnitRef(val unitKey: String, val text: String, val pageStart: Int, val pageEnd: Int)
 data class ChapterRef(val number: Int, val title: String, val pageStart: Int, val pageEnd: Int, val unitKey: String)
@@ -455,9 +459,9 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 3. Paragraph + phrase segmentation, with the size cap.
 4. Unit keys + offsets-only SQLite store with contentless FTS; idempotent `index`, `--reindex`; paragraph embedding with Matryoshka truncation + int8/binary quantization (§5.6); resumable `rag embed`; CLI `index`, `embed`, `books`, `dump`.
 5. Search: exact path, FTS5 BM25, binary-then-int8 vector search, RRF fusion; `--mode`, `--json` output.
-6. *(Optional)* RAPTOR-style summaries (§5.7):
+6. *(Optional)* RAPTOR-style summaries (§5.7). **Built** (2026-10-14):
    1. `Summarizer` interface, `OllamaSummarizer`, `FakeSummarizer`; prompts `v1`; output cleaning.
-   2. Section packing and the summary tree (sections → groups → chapter → book), resumable, with schema version 2.
+   2. Section packing and the summary tree (sections → groups → chapter → book), resumable, with schema version 3.
    3. Summary embedding + `summary_fts`; `rag summarize`, `rag dump --summaries`.
    4. `SUMMARY` hits in search, `--no-summaries`.
    5. Real-book run: measure time and size, and record them in §13.
@@ -523,12 +527,13 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - **Invalidation:** `--redo` or a different model replaces all summaries, `--reindex` removes them, and no `summary_fts` rows are orphaned.
 - **Search:** with summaries, a query naming a chapter's topic returns a `SUMMARY` hit with the summary text, its chapter and a paragraph inside the span. At most 2 `SUMMARY` hits are returned. `--no-summaries` returns none. Exact hits still come first.
 
-**Phase 6 on the real book** (tags `book` + `ollama`, plus `RAG_SUMMARY_MODEL` pulled):
-- There are 8 chapter summaries (front matter has none) and 1 book summary, each within its word cap.
-- **Grounding:** at least 95% of the CamelCase identifiers in all summaries (e.g. `SlotTable`, `LaunchedEffect`) appear in the book text. This is a cheap check for invented API names.
-- "what is the state snapshot system chapter about" → a `SUMMARY` hit for "5. State snapshot system" in the top 3.
-- "what does this book cover" → the book summary in the top 3.
-- Time, the number of model calls, and the summary storage size are recorded in §13.
+**Phase 6 on the real book** (`RealBookSummaryTest`, tags `book` + `ollama`, plus `RAG_SUMMARY_MODEL`, e.g. `llama3.2:3b`; takes ~4 minutes). Results 2026-10-14:
+- 8 chapter summaries (front matter has none) and 1 book summary, each within its word cap. ✅
+- **Grounding:** at least 95% of the CamelCase identifiers in all summaries (e.g. `SlotTable`, `LaunchedEffect`) appear in the book text, a cheap check for invented API names. ✅ **111 of 112.**
+- "what is the state snapshot system chapter about" → a `SUMMARY` hit for "5. State snapshot system" in the top 3. ✅ (#3, after two paragraphs of that chapter)
+- "what does this book cover" → the book summary. ⚠️ It's at **#5**, not the top 3 the spec asked for. Front-matter boilerplate ("This book is for sale at…", dedications) ranks above it, and the Prelude's chapter summary ("This book is about…") is at #3. The test checks the top 5; front-matter weighting is an open question (§14).
+- Quality, read by hand: chapter and section summaries are accurate and specific. One soft spot: chapter 3's summary says the runtime "is implemented by `AndroidComposeView`", a slight conflation of the book's integration-layer description.
+- Hits carry `summaryLevel` (`section`, `group`, `chapter`, `book`), because a book summary's `chapter` is only the chapter of its chosen paragraph.
 
 **More local books** (`MoreBooksTest`, tag `book`; each runs only when its environment variable points to the user's copy, and the books never enter the repo):
 - `RAG_KOTLIN_PDF`, *Kotlin for Android Developers* (Leanpub): 35 chapters from the outline, with numbered sections staying inside them. No running footers (`5 Writing your first class 26`; 175 before the fixes).
@@ -590,9 +595,9 @@ Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,649 paragr
 | Vectors, int8 + bits, 512 dims | disk; int8 read for ~100 candidates per query | ~1.1 MB |
 | Vectors, binary, 512 dims | **RAM** during search | 1,649 × 64 B ≈ **106 KB** |
 | **Whole DB file** | disk | **~2.8 MB** (measured) |
-| Summaries, Phase 6: text + vectors | disk | ~120 KB (estimate) |
-| Summaries, Phase 6: binary vectors | **RAM** during search | ~5 KB (estimate) |
-| Summary model (`llama3.2:3b`) | RAM, only during `rag summarize` | ~2 GB |
+| Summaries, Phase 6: text + vectors + FTS | disk | ~156 KB (measured) |
+| Summaries, Phase 6: binary vectors | **RAM** during search | ~4 KB (measured) |
+| Summary model (`llama3.2:3b`) | RAM, only during `rag summarize` | 2.5 GB (measured) |
 
 For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model is the largest memory cost by far: `mxbai-embed-large` takes ~687 MB in Ollama (`nomic-embed-text` ~370 MB), and it's needed only while indexing and to embed each query. Embedding the whole book takes 32 s with mxbai and 16 s with nomic.
 
@@ -602,6 +607,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
 - Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
+- **Front matter in search:** copyright pages, "for sale at", dedications and social-media notes match generic questions ("what does this book cover") and outrank real answers, including the book summary (§11). Candidates: down-weight chapter 0, or drop paragraphs that are only links or boilerplate.
 - **Confidence-gated fusion:** with mxbai-embed-large, hybrid never beat vector-only on three sets (§8.3). Candidates: use keyword hits only when they also appear in the vector top N, or when the query has rare terms (high IDF). Evaluate against all sets before changing the default.
 - **OCR text layers** (e.g. CtCI) carry recognition errors: `ot` for `of`, `II` for `//`, `�`. Possible later steps: report an OCR-quality score at index time, and treat lines that are only dot leaders plus `pg N` (CtCI's printed cross-references) as noise.
 - **Code without line numbers** (Kotlin for Android Developers, CtCI) stays prose paragraphs. Detecting it would need layout cues such as a monospaced font, through PDFBox's text positions. EPUB marks code explicitly (§16.3).

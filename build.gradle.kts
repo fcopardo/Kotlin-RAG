@@ -53,4 +53,5 @@ tasks.test {
     inputs.property("ragBookPdf", providers.environmentVariable("RAG_BOOK_PDF").orElse(""))
     inputs.property("ragKotlinPdf", providers.environmentVariable("RAG_KOTLIN_PDF").orElse(""))
     inputs.property("ragCtciPdf", providers.environmentVariable("RAG_CTCI_PDF").orElse(""))
+    inputs.property("ragSummaryModel", providers.environmentVariable("RAG_SUMMARY_MODEL").orElse(""))
 }

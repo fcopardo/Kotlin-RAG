@@ -25,6 +25,10 @@ data class BookRow(
     val format: String = "pdf",
     /** "pdf", "print" or "location" (SPEC §16.5). */
     val pageKind: String = "pdf",
+    val summaryModel: String? = null,
+    val summaryPrompt: String? = null,
+    /** "none", "partial" or "complete" (SPEC §5.7.4). */
+    val summaryStatus: String = "none",
 )
 
 data class StoredUnit(
@@ -47,6 +51,24 @@ data class StoredUnit(
     val key: String
         get() = UnitKeys.format(hash, occurrence, kind, if (kind == UnitKind.CHAPTER) bookId.toInt() else chapter)
 }
+
+/** A stored summary (SPEC §5.7): generated text with the span of book text it covers. */
+data class StoredSummary(
+    val id: Long,
+    val bookId: Long,
+    /** The chapter unit, or the book unit for level "book". */
+    val unitId: Long,
+    val level: String,
+    val depth: Int,
+    val ordinal: Int,
+    val charStart: Int,
+    val charEnd: Int,
+    val pageStart: Int,
+    val pageEnd: Int,
+    val model: String,
+    val prompt: String,
+    val text: String,
+)
 
 /** A paragraph that still needs an embedding, with what's needed to build its input. */
 data class ParagraphToEmbed(val unitId: Long, val hash: String, val start: Int, val end: Int, val isCode: Boolean, val chapterTitle: String)
@@ -91,6 +113,17 @@ class SqliteStore(path: String) : AutoCloseable {
         val bookColumns = columns("book")
         if ("format" !in bookColumns) update("ALTER TABLE book ADD COLUMN format TEXT NOT NULL DEFAULT 'pdf'")
         if ("page_kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'pdf'")
+        // Version 2 → 3 (summaries, SPEC §5.7): progress columns, and the full summary table.
+        if ("summary_model" !in bookColumns) {
+            update("ALTER TABLE book ADD COLUMN summary_model TEXT")
+            update("ALTER TABLE book ADD COLUMN summary_prompt TEXT")
+            update("ALTER TABLE book ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'none'")
+        }
+        if ("char_start" !in columns("summary")) {
+            // The version 1-2 placeholder table is always empty.
+            update("DROP TABLE summary")
+            update(SUMMARY_TABLE)
+        }
     }
 
     private fun columns(table: String): Set<String> = query("PRAGMA table_info($table)") { it.getString("name") }.toSet()
@@ -284,6 +317,91 @@ class SqliteStore(path: String) : AutoCloseable {
         }
     }
 
+    // --- summaries (SPEC §5.7) ---
+
+    fun setSummaryState(bookId: Long, model: String?, prompt: String?, status: String) {
+        update("UPDATE book SET summary_model = ?, summary_prompt = ?, summary_status = ? WHERE id = ?", model, prompt, status, bookId)
+    }
+
+    /** An existing summary at this position of the tree, made with this model and prompt version. */
+    fun findSummary(unitId: Long, level: String, depth: Int, ordinal: Int, model: String, prompt: String): StoredSummary? = query(
+        "SELECT * FROM summary WHERE unit_id = ? AND level = ? AND depth = ? AND ordinal = ? AND model = ? AND prompt = ?",
+        unitId, level, depth, ordinal, model, prompt, mapper = ::storedSummary,
+    ).firstOrNull()
+
+    /** Stores a summary and indexes its text in `summary_fts`; one transaction. */
+    fun insertSummary(
+        bookId: Long, unitId: Long, level: String, depth: Int, ordinal: Int,
+        charStart: Int, charEnd: Int, pageStart: Int, pageEnd: Int, model: String, prompt: String, text: String,
+    ): Long = transaction {
+        val id = insert(
+            """INSERT INTO summary(book_id, unit_id, level, depth, ordinal, char_start, char_end, page_start, page_end, model, prompt, text)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            bookId, unitId, level, depth, ordinal, charStart, charEnd, pageStart, pageEnd, model, prompt, text,
+        )
+        update("INSERT INTO summary_fts(rowid, text) VALUES (?, ?)", id, text)
+        id
+    }
+
+    fun summaries(bookId: Long): List<StoredSummary> =
+        query("SELECT * FROM summary WHERE book_id = ? ORDER BY char_start, depth, id", bookId, mapper = ::storedSummary)
+
+    fun summary(id: Long): StoredSummary? = query("SELECT * FROM summary WHERE id = ?", id, mapper = ::storedSummary).firstOrNull()
+
+    fun deleteSummaries(bookId: Long) = transaction {
+        update("DELETE FROM summary_fts WHERE rowid IN (SELECT id FROM summary WHERE book_id = ?)", bookId)
+        update("DELETE FROM summary WHERE book_id = ?", bookId)
+    }
+
+    /** Summaries without a vector from this model and dimension. */
+    fun summariesMissingEmbedding(bookId: Long, model: String, dim: Int): List<StoredSummary> = query(
+        "SELECT * FROM summary WHERE book_id = ? AND (embed_model IS NULL OR embed_model <> ? OR dim <> ?) ORDER BY id",
+        bookId, model, dim, mapper = ::storedSummary,
+    )
+
+    fun saveSummaryEmbeddings(model: String, vectors: List<Pair<Long, QuantizedVector>>) = transaction {
+        batch("UPDATE summary SET embed_model = ?, dim = ?, scale = ?, vec_i8 = ?, vec_bits = ? WHERE id = ?",
+            vectors.map { (id, v) -> listOf(model, v.dim, v.scale, v.int8, Quantizer.bitsToBlob(v.bits), id) })
+    }
+
+    fun summaryBinaryVectors(bookId: Long): List<Pair<Long, LongArray>> = query(
+        "SELECT id, vec_bits FROM summary WHERE book_id = ? AND vec_bits IS NOT NULL ORDER BY id", bookId,
+    ) { it.getLong(1) to Quantizer.blobToBits(it.getBytes(2)) }
+
+    fun summaryVectors(ids: Collection<Long>): List<StoredVector> {
+        if (ids.isEmpty()) return emptyList()
+        val marks = ids.joinToString(",") { "?" }
+        return query("SELECT id, scale, vec_i8, vec_bits FROM summary WHERE id IN ($marks) AND vec_i8 IS NOT NULL", *ids.toTypedArray()) {
+            StoredVector(it.getLong(1), it.getFloat(2), it.getBytes(3), Quantizer.blobToBits(it.getBytes(4)))
+        }
+    }
+
+    /** Summary ids matching an FTS5 query in one book, best BM25 first. */
+    fun summaryFtsSearch(matchQuery: String, bookId: Long, limit: Int = 20): List<Long> = query(
+        """SELECT summary_fts.rowid FROM summary_fts JOIN summary s ON s.id = summary_fts.rowid
+           WHERE summary_fts MATCH ? AND s.book_id = ? ORDER BY bm25(summary_fts) LIMIT ?""",
+        matchQuery, bookId, limit,
+    ) { it.getLong(1) }
+
+    /** Paragraph ids inside `[from, to]` matching an FTS5 query, best BM25 first. */
+    fun paragraphsInSpan(matchQuery: String, bookId: Long, from: Int, to: Int, limit: Int = 1): List<Long> = query(
+        """SELECT para_fts.rowid FROM para_fts JOIN unit u ON u.id = para_fts.rowid
+           WHERE para_fts MATCH ? AND u.book_id = ? AND u.char_start >= ? AND u.char_end <= ? ORDER BY bm25(para_fts) LIMIT ?""",
+        matchQuery, bookId, from, to, limit,
+    ) { it.getLong(1) }
+
+    /** The first paragraph that starts inside `[from, to]`. */
+    fun firstParagraphInSpan(bookId: Long, from: Int, to: Int): StoredUnit? = query(
+        "SELECT * FROM unit WHERE book_id = ? AND kind = 'g' AND char_start >= ? AND char_start <= ? ORDER BY char_start LIMIT 1",
+        bookId, from, to, mapper = ::storedUnit,
+    ).firstOrNull()
+
+    private fun storedSummary(rs: ResultSet) = StoredSummary(
+        rs.getLong("id"), rs.getLong("book_id"), rs.getLong("unit_id"), rs.getString("level"), rs.getInt("depth"),
+        rs.getInt("ordinal"), rs.getInt("char_start"), rs.getInt("char_end"), rs.getInt("page_start"), rs.getInt("page_end"),
+        rs.getString("model"), rs.getString("prompt"), rs.getString("text"),
+    )
+
     // --- JDBC helpers ---
 
     private fun bind(statement: java.sql.PreparedStatement, vararg args: Any?) {
@@ -318,6 +436,7 @@ class SqliteStore(path: String) : AutoCloseable {
         rs.getObject("page_offset")?.let { (it as Number).toInt() }, rs.getString("embed_model"),
         rs.getObject("embed_dim")?.let { (it as Number).toInt() }, rs.getString("embed_status"), rs.getString("created_at"),
         rs.getString("format"), rs.getString("page_kind"),
+        rs.getString("summary_model"), rs.getString("summary_prompt"), rs.getString("summary_status"),
     )
 
     private fun storedUnit(rs: ResultSet) = StoredUnit(
@@ -328,7 +447,27 @@ class SqliteStore(path: String) : AutoCloseable {
     )
 
     companion object {
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
+
+        /** SPEC §7, Phase 6: generated summaries stored with their text and the span they cover. */
+        private val SUMMARY_TABLE = """
+            CREATE TABLE IF NOT EXISTS summary (
+              id INTEGER PRIMARY KEY,
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+              unit_id INTEGER NOT NULL REFERENCES unit(id) ON DELETE CASCADE,
+              level TEXT NOT NULL CHECK (level IN ('section','group','chapter','book')),
+              depth INTEGER NOT NULL DEFAULT 0,
+              ordinal INTEGER NOT NULL,
+              char_start INTEGER NOT NULL,
+              char_end INTEGER NOT NULL,
+              page_start INTEGER NOT NULL,
+              page_end INTEGER NOT NULL,
+              model TEXT NOT NULL,
+              prompt TEXT NOT NULL,
+              text TEXT NOT NULL,
+              embed_model TEXT, dim INTEGER, scale REAL, vec_i8 BLOB, vec_bits BLOB,
+              UNIQUE (unit_id, level, depth, ordinal, model, prompt)
+            )""".trimIndent()
 
         /** Unit hashes are 16 hex chars (64 bits); stored as INTEGER, half the size of the text. */
         fun hashToLong(hash: String): Long = java.lang.Long.parseUnsignedLong(hash, 16)
@@ -350,7 +489,10 @@ class SqliteStore(path: String) : AutoCloseable {
               embed_status TEXT NOT NULL DEFAULT 'none' CHECK (embed_status IN ('none','partial','complete')),
               created_at TEXT NOT NULL,
               format TEXT NOT NULL DEFAULT 'pdf',
-              page_kind TEXT NOT NULL DEFAULT 'pdf' 
+              page_kind TEXT NOT NULL DEFAULT 'pdf',
+              summary_model TEXT,
+              summary_prompt TEXT,
+              summary_status TEXT NOT NULL DEFAULT 'none' 
             );
             CREATE TABLE IF NOT EXISTS page (
               book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
@@ -386,16 +528,7 @@ class SqliteStore(path: String) : AutoCloseable {
               vec_i8 BLOB NOT NULL,
               vec_bits BLOB NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS summary (
-              id INTEGER PRIMARY KEY,
-              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
-              unit_id INTEGER NOT NULL REFERENCES unit(id) ON DELETE CASCADE,
-              level TEXT NOT NULL CHECK (level IN ('section','chapter','book')),
-              ordinal INTEGER NOT NULL,
-              model TEXT NOT NULL,
-              text TEXT NOT NULL,
-              embed_model TEXT, dim INTEGER, scale REAL, vec_i8 BLOB, vec_bits BLOB
-            );
+            $SUMMARY_TABLE;
             CREATE VIRTUAL TABLE IF NOT EXISTS para_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
             CREATE VIRTUAL TABLE IF NOT EXISTS phrase_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
             CREATE VIRTUAL TABLE IF NOT EXISTS summary_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61')

@@ -25,6 +25,8 @@ import rag.index.Indexer
 import rag.index.UnitKind
 import kotlinx.serialization.json.Json
 import rag.search.Evaluation
+import rag.summarize.OllamaSummarizer
+import rag.summarize.SummaryIndexer
 import rag.search.Mode
 import rag.search.Searcher
 import rag.store.SqliteStore
@@ -95,6 +97,7 @@ private class SearchCommand : CliktCommand(name = "search") {
     val book by option("--book", help = "Only this book id").long()
     val mode by option("--mode", help = "hybrid | lexical | vector").choice("hybrid", "lexical", "vector").default("hybrid")
     val json by option("--json", help = "Print results as JSON").flag()
+    val noSummaries by option("--no-summaries", help = "Search paragraphs only").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
     val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
@@ -108,14 +111,17 @@ private class SearchCommand : CliktCommand(name = "search") {
             models.firstOrNull()
         }
         val embedder = if (mode == "lexical" || model == null) null else OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
-        val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK).search(query, k, book, Mode.valueOf(mode.uppercase()))
+        val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries)
+            .search(query, k, book, Mode.valueOf(mode.uppercase()))
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use
         }
         if (hits.isEmpty()) echo("No results.")
         hits.forEachIndexed { i, h ->
-            echo("${i + 1}. [${h.matchType}] ${h.chapter.title} · ${pages(h.pageKind, h.paragraph.pageStartLabel, h.paragraph.pageEndLabel)}  (score %.4f)".format(h.score))
+            val type = h.summaryLevel?.let { "${h.matchType} $it" } ?: h.matchType.name
+            echo("${i + 1}. [$type] ${h.chapter.title} · ${pages(h.pageKind, h.paragraph.pageStartLabel, h.paragraph.pageEndLabel)}  (score %.4f)".format(h.score))
+            h.summary?.let { echo("   summary: ${it.replace('\n', ' ')}") }
             echo("   phrase: ${h.phrase.text.replace('\n', ' ')}")
             if (h.paragraph.text != h.phrase.text) echo("   paragraph: ${h.paragraph.text.replace('\n', ' ').take(300)}")
             echo("   key: ${h.phrase.unitKey}")
@@ -168,6 +174,31 @@ private class EvalCommand : CliktCommand(name = "eval") {
     }
 }
 
+private class SummarizeCommand : CliktCommand(name = "summarize") {
+    override fun help(context: Context) = "Summarize a book's sections, chapters and the whole book with a local model (Phase 6)."
+    val db by option("--db").required()
+    val book by option("--book", help = "Book id (see `rag books`)").long().required()
+    val summaryModel by option("--summary-model", help = "Ollama model that writes the summaries").default(OllamaSummarizer.DEFAULT_MODEL)
+    val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
+    val redo by option("--redo", help = "Delete this book's summaries and start over").flag()
+
+    override fun run() = SqliteStore(db).use { store ->
+        val row = store.book(book) ?: throw UsageError("no book with id $book")
+        // Summary vectors use the book's own embedding model, so they're comparable with its paragraphs.
+        val embedder = row.embedModel?.let { OllamaEmbedder(EmbeddingModel.forName(it), ollamaUrl) }
+        if (embedder == null) echo("Book $book has no embeddings: summaries will be searchable by keywords only.")
+        var done = 0
+        val indexer = SummaryIndexer(store, OllamaSummarizer(summaryModel, ollamaUrl), embedder, progress = { what ->
+            done++
+            echo("  [$done] $what")
+        })
+        val started = System.nanoTime()
+        val result = indexer.summarize(book, redo)
+        val seconds = (System.nanoTime() - started) / 1_000_000_000
+        echo("Summaries: ${result.generated} written, ${result.reused} reused, ${result.embedded} embedded, status ${result.status} (${seconds}s)")
+    }
+}
+
 private class BooksCommand : CliktCommand(name = "books") {
     override fun help(context: Context) = "List indexed books."
     val db by option("--db").required()
@@ -177,7 +208,8 @@ private class BooksCommand : CliktCommand(name = "books") {
         if (books.isEmpty()) echo("No books indexed.")
         books.forEach { b ->
             val vectors = b.embedModel?.let { "${it}@${b.embedDim}d ${b.embedStatus}" } ?: "no embeddings"
-            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.format}, pages: ${b.pageKind}; chapters by ${b.chapterStrategy}; $vectors]")
+            val summaries = b.summaryModel?.let { "summaries ${it} ${b.summaryStatus}" } ?: "no summaries"
+            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.format}, pages: ${b.pageKind}; chapters by ${b.chapterStrategy}; $vectors; $summaries]")
         }
     }
 }
@@ -190,11 +222,24 @@ private class DumpCommand : CliktCommand(name = "dump") {
         option("--chapters", help = "List chapters (default)").flag().convert { null as Int? },
         option("--chapter", help = "Print chapter N's text").int(),
     ).single()
+    val summaries by option("--summaries", help = "Print the book's summaries").flag()
 
     override fun run() = SqliteStore(db).use { store ->
         val row = store.book(book) ?: throw UsageError("no book with id $book")
         val chapters = store.units(book, UnitKind.CHAPTER)
         val labels = store.pageLabels(book)
+        if (summaries) {
+            val titles = chapters.associate { it.id to it.title.orEmpty() }
+            val all = store.summaries(book)
+            if (all.isEmpty()) echo("No summaries. Run `rag summarize --db $db --book $book`.")
+            all.sortedWith(compareBy({ it.level == "book" }, { it.charStart }, { listOf("section", "group", "chapter").indexOf(it.level) }, { it.depth }))
+                .forEach { s ->
+                    val span = citation(row.pageKind, labels.getOrElse(s.pageStart - 1) { "${s.pageStart}" }, labels.getOrElse(s.pageEnd - 1) { "${s.pageEnd}" })
+                    val where = if (s.level == "book") "book" else titles[s.unitId].orEmpty()
+                    echo("[${s.level}${if (s.level == "group") " d${s.depth}" else ""} #${s.ordinal}] $where · $span\n${s.text}\n")
+                }
+            return@use
+        }
         val number = what
         if (number == null) {
             chapters.forEach { c ->
@@ -216,7 +261,7 @@ private fun citation(kind: String, start: String, end: String): String = when {
 }
 
 fun main(args: Array<String>) {
-    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), BooksCommand(), DumpCommand())
+    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), BooksCommand(), DumpCommand())
     val exitCode = try {
         command.parse(args)
         0
