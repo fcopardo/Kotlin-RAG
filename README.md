@@ -1,13 +1,14 @@
 # Kotlin-RAG
 
-A command-line **digestor** that turns PDF books into a small, local, searchable index for
-retrieval-augmented generation (RAG). It runs entirely on your machine: the PDF is parsed with
-PDFBox, stored in a single SQLite file, and embedded with a local model through
+A command-line **digestor** that turns PDF and EPUB books into a small, local, searchable index for
+retrieval-augmented generation (RAG). It runs entirely on your machine: the book is parsed (PDFBox
+for PDF, jsoup for EPUB), stored in a single SQLite file, and embedded with a local model through
 [Ollama](https://ollama.com). Nothing is sent to a remote service.
 
 Each book is split into a hierarchy (**book → chapters → paragraphs → phrases**). Search
 combines three ways of matching and returns, for each result, the closest sentence, its full
-paragraph, and its chapter, with PDF page numbers for citation.
+paragraph, and its chapter, with page numbers for citation: PDF pages, the printed pages of an EPUB
+that has a page list, or "locations" for other EPUBs.
 
 The index is designed to be **small**: the book text is stored once and everything else points
 into it by offset; the full-text index stores no text; vectors are truncated and quantized, and
@@ -28,8 +29,9 @@ The full design, decisions and measurements are in [SPEC.md](SPEC.md).
   ollama pull nomic-embed-text      # optional: ~270 MB, lighter alternative
   ```
 
-- **PDFs with a text layer.** Scanned (image-only) PDFs aren't supported, since there's no OCR.
-  PDFs that need a password to open are rejected.
+- **Books:**
+  - **PDFs with a text layer.** Scanned (image-only) PDFs aren't supported, since there's no OCR; PDFs that need a password to open are rejected. OCR text layers work, with their recognition errors.
+  - **DRM-free EPUB 2 or 3** (reflowable). DRM-protected and fixed-layout EPUBs are detected and rejected. Many store-bought EPUBs have DRM; DRM-free sources include Leanpub, many technical publishers, Standard Ebooks and Project Gutenberg.
 
 ## Build
 
@@ -43,8 +45,9 @@ add `build/install/rag/bin` to your `PATH`, or use the full path.
 ## Quick start
 
 ```bash
-# 1. Index a book (parses, stores, and embeds; about 40 s for a 200-page book)
-rag index --pdf ~/Books/my-book.pdf --db books.db
+# 1. Index a book, PDF or EPUB (parses, stores, and embeds; about 40 s for a 200-page book)
+rag index --file ~/Books/my-book.pdf --db books.db
+rag index --file ~/Books/another-book.epub --db books.db
 
 # 2. See what's in the database
 rag books --db books.db
@@ -68,14 +71,15 @@ Example output:
 ### `rag index`: add a book
 
 ```bash
-rag index --pdf <file> --db <file> [options]
+rag index --file <pdf|epub> --db <file> [options]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--pdf` | required | The PDF to index. |
+| `--file` | required | The PDF or EPUB to index; the format is detected from the content. `--pdf` still works as an alias. |
 | `--db` | required | SQLite database file; created if missing. One file can hold many books. |
-| `--toc-pages` | none | PDF pages (1-based) that hold the table of contents, e.g. `5-8` or `2-3,5`. Only needed when the PDF has no bookmarks. |
+| `--toc-pages` | none | PDF only: pages (1-based) that hold the table of contents, e.g. `5-8` or `2-3,5`. Only needed when the PDF has no bookmarks. |
+| `--location-size` | `2000` | EPUB without a page list: characters per location. |
 | `--reindex` | off | Rebuild a book that is already indexed. |
 | `--no-embed` | off | Store the structure only; run `rag embed` later. |
 | `--embed-model` | `mxbai-embed-large` | Ollama embedding model. `nomic-embed-text` is a lighter alternative. |
@@ -84,11 +88,15 @@ rag index --pdf <file> --db <file> [options]
 
 - **Idempotent:** a book is identified by the SHA-256 of the file, so indexing the same PDF
   again does nothing unless you pass `--reindex`.
-- **Chapters:** chapters are found from the PDF's bookmarks; failing that, from the table of
-  contents pages you give with `--toc-pages` (the offset between printed and PDF page numbers is
-  worked out automatically); failing that, the whole book is one chapter.
-- **Cleanup:** running headers and footers, page numbers, URL footnotes and the table of contents
-  are removed; numbered code listings are merged into code blocks without their line numbers.
+- **Chapters (PDF):** from the PDF's bookmarks; failing that, from the table of contents pages you
+  give with `--toc-pages` (the offset between printed and PDF page numbers is worked out
+  automatically); failing that, the whole book is one chapter. "Part" levels become
+  `Part › Chapter` titles; sections stay inside their chapters.
+- **Chapters (EPUB):** from the EPUB's table of contents (EPUB 3 nav or EPUB 2 NCX), else from
+  each document's leading heading.
+- **Cleanup:** running headers and footers (including OCR variants), page numbers, URL footnotes and
+  their markers, soft hyphens and the table of contents are removed; numbered code listings become
+  code blocks without their line numbers. In EPUBs, `<pre>` blocks keep their indentation.
 - **Ollama down:** if Ollama can't be reached, nothing is stored and the command exits with
   code 5.
 
@@ -117,6 +125,7 @@ rag search --db <file> -q "<question or text>" [options]
 | `--json` | off | Print results as JSON, for scripts and LLM tools. |
 | `--embed-model` | the model the books were embedded with | Override the query embedding model. |
 | `--ollama-url` | `http://localhost:11434` | Ollama server. |
+| `--lexical-weight`, `--rrf-k` | `0.5`, `5` | Fusion settings, for calibration; see SPEC.md §8.3. |
 
 How a search works:
 
@@ -125,8 +134,9 @@ How a search works:
 2. **Keywords:** BM25 full-text search over paragraphs, ignoring common words like "the" or "how".
 3. **Meaning:** the query is embedded and compared with every paragraph's 1-bit vector; the
    closest ~200 are re-scored with 8-bit vectors.
-4. **Fusion:** keyword and meaning rankings are merged (reciprocal rank fusion), with the keyword
-   ranking at half weight. Each hit says how it was found: `HYBRID` (both), `LEXICAL` or `VECTOR`.
+4. **Fusion:** keyword and meaning rankings are merged (reciprocal rank fusion, k = 5), with the
+   keyword ranking at half weight. Each hit says how it was found: `HYBRID` (both), `LEXICAL` or
+   `VECTOR`.
 5. For each paragraph, the **closest phrase** (sentence) is picked.
 
 If Ollama is down, `hybrid` search falls back to keywords with a warning; `vector` search fails.
@@ -138,11 +148,12 @@ If Ollama is down, `hybrid` search falls back to keywords with a warning; `vecto
   {
     "score": 1.0,
     "matchType": "EXACT_PHRASE",
-    "phrase":    { "unitKey": "8270da367b74fc5b-0p-2c", "text": "…", "pageStart": 13, "pageEnd": 13 },
-    "paragraph": { "unitKey": "…-0g-2c", "text": "…", "pageStart": 13, "pageEnd": 13 },
-    "chapter":   { "number": 2, "title": "1. Composable functions", "pageStart": 11, "pageEnd": 24, "unitKey": "…" },
+    "phrase":    { "unitKey": "8270da367b74fc5b-0p-2c", "text": "…", "pageStart": 13, "pageEnd": 13, "pageStartLabel": "13", "pageEndLabel": "13" },
+    "paragraph": { "unitKey": "…-0g-2c", "text": "…", "pageStart": 13, "pageEnd": 13, "pageStartLabel": "13", "pageEndLabel": "13" },
+    "chapter":   { "number": 2, "title": "1. Composable functions", "pageStart": 11, "pageEnd": 24, "unitKey": "…", "pageStartLabel": "11", "pageEndLabel": "24" },
     "bookId": 1,
-    "bookTitle": "…"
+    "bookTitle": "…",
+    "pageKind": "pdf"
   }
 ]
 ```
@@ -151,10 +162,14 @@ If Ollama is down, `hybrid` search falls back to keywords with a warning; `vecto
 phrase (p) – in chapter 2 (c)*. They're derived from the text, so they stay the same when a
 book is re-indexed, which makes them good for citations.
 
+**Pages:** `pageStart`/`pageEnd` are page ordinals; cite with the labels. `pageKind` says what the
+labels are: `pdf` (PDF page numbers), `print` (the printed edition's pages, from an EPUB page list)
+or `location` (`loc 37`: fixed-size chunks of an EPUB without a page list).
+
 ### `rag eval`: measure search quality
 
 ```bash
-rag eval --db <file> --set <questions.jsonl> [--book <id>] [--k 5] [--mode all|hybrid|lexical|vector] [--details]
+rag eval --db <file> --set <questions.jsonl> [--book <id>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
 ```
 
 Runs a set of questions with known answers and reports, per mode: recall@k (share of questions
@@ -165,10 +180,15 @@ whose answer page is in the top k), MRR, chapter recall, and recall per question
 {"id":"q02","query":"positional memoization","expectedPages":[17,18],"expectedChapter":"1. Composable functions","kind":"keyword"}
 ```
 
-`kind` is free text; the repository's set uses `keyword` and `paraphrase` (a question that shares
-no content words with its answer). [src/test/resources/eval/compose-internals.jsonl](src/test/resources/eval/compose-internals.jsonl)
-holds 20 questions for *Jetpack Compose internals*. Current results with the default model:
-hybrid recall@5 **0.80**, all keyword questions found, 5 of 9 paraphrases.
+Instead of (or besides) `expectedPages`, a question can give `expectedAnchor`: a short phrase from
+the answer passage, matched inside the hit's paragraph. Anchors work across formats and editions.
+`kind` is free text; the repository's sets use `keyword` and `paraphrase` (a question that shares
+no content words with its answer). Sets in [src/test/resources/eval/](src/test/resources/eval/):
+
+| Set | Book | Hybrid recall@5 (default settings) |
+|---|---|---|
+| `compose-internals.jsonl` | *Jetpack Compose internals* (PDF, not in the repo) | 0.80 |
+| `art-of-war-se.jsonl` | *The Art of War*, Standard Ebooks (EPUB, in the repo) | 0.75 |
 
 ### `rag books`: list books
 
@@ -228,6 +248,10 @@ environment variables:
 | `RAG_BOOK_PDF=/path/to/book.pdf` | Tests against *Jetpack Compose internals* (Jorge Castillo, Leanpub, 2022-11-20). The book is copyrighted and isn't part of this repository; use your own copy. |
 | `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
 
+The EPUB tests use two public-domain editions of *The Art of War* committed in
+[src/test/resources/epub/](src/test/resources/epub/) (sources and licenses in its README), so they run anywhere;
+their evaluation needs `RAG_OLLAMA=1`.
+
 ```bash
 RAG_OLLAMA=1 RAG_BOOK_PDF=~/Downloads/composeinternals.pdf ./gradlew test
 ```
@@ -238,7 +262,9 @@ Code layout:
 src/main/kotlin/rag/
   Main.kt            CLI
   BookReader.kt      PDF → chapters → paragraphs → phrases
+  BookSource.kt      format detection; PDF and EPUB sources share everything after it
   extract/           PDF text, header/footer/footnote/code-listing cleanup, normalization
+  epub/              EPUB package, navigation, DRM checks, XHTML → text
   structure/         chapter detection (bookmarks, TOC), segmentation
   embed/             Ollama client, truncation and quantization
   index/             unit keys, indexing and embedding
@@ -256,6 +282,5 @@ src/main/kotlin/rag/
   questions like "what is chapter 5 about?" can be answered. Design in SPEC.md §5.7.
 - **Planned (Phase 7):** desktop and Android from one code base, sharing the same index file,
   with on-device embeddings through ONNX Runtime. Design in SPEC.md §15.
-- **Planned (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
-  table of contents and citations by printed page where the EPUB has a page list. Design in
-  SPEC.md §16.
+- **Done (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
+  table of contents and citations by printed page where the EPUB has a page list (SPEC.md §16).

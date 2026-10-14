@@ -7,6 +7,9 @@ import java.text.Normalizer as JdkNormalizer
 object Normalizer {
 
     private val lineEndings = Regex("\r\n?")
+    // Invisible characters with no meaning for text search: zero-width space, word joiner, BOM.
+    // (ZWJ/ZWNJ are kept: some scripts need them.)
+    private val zeroWidth = Regex("[\u200B\u2060\uFEFF]")
     // A soft hyphen (U+00AD) marks a possible break; at a line end the word continues on the next line.
     private val softHyphenAtLineEnd = Regex("\u00AD[ \t]*\n[ \t]*")
     // Both sides lowercase letters, so "exam-\nple" joins but "well-\nKnown" and "COVID-\n19" don't.
@@ -20,6 +23,7 @@ object Normalizer {
     fun normalize(raw: String): String {
         var text = JdkNormalizer.normalize(raw, JdkNormalizer.Form.NFKC)
         text = lineEndings.replace(text, "\n")
+        text = zeroWidth.replace(text, "")
         text = softHyphenAtLineEnd.replace(text, "").replace("\u00AD", "")
         text = lineEndHyphen.replace(text, "$1$2")
         text = horizontalSpace.replace(text, " ")
@@ -38,7 +42,7 @@ object Normalizer {
     fun normalizeCode(raw: String): String {
         var text = JdkNormalizer.normalize(raw, JdkNormalizer.Form.NFKC)
         text = lineEndings.replace(text, "\n")
-        text = text.replace("\u00AD", "").replace('\t', ' ')
+        text = zeroWidth.replace(text, "").replace("\u00AD", "").replace('\t', ' ')
         text = trailingSpacePerLine.replace(text, "")
         return blankLines.replace(text, "\n")
     }

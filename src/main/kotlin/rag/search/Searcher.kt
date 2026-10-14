@@ -65,6 +65,10 @@ class Searcher(
     private val embedder: Embedder?,
     private val textCacheBooks: Int = 2,
     private val warn: (String) -> Unit = { System.err.println("Warning: $it") },
+    /** Weight of the keyword list in the fusion (SPEC §8.3); the vector list has 1. */
+    private val lexicalWeight: Double = LEXICAL_WEIGHT,
+    /** Reciprocal rank fusion constant: smaller makes rank matter more (SPEC §8.3). */
+    private val rrfK: Int = RRF_K,
 ) {
     private val texts = object : LinkedHashMap<Long, String>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
@@ -94,7 +98,7 @@ class Searcher(
 
         val lexicalSet = lexical.toSet()
         val denseSet = dense.toSet()
-        val fused = Fusion.rrf(listOf(lexical, dense), weights = listOf(LEXICAL_WEIGHT, 1.0))
+        val fused = Fusion.rrf(listOf(lexical, dense), k = rrfK, weights = listOf(lexicalWeight, 1.0))
         val ranked = fused.map { (id, score) ->
             val type = when {
                 id in lexicalSet && id in denseSet -> MatchType.HYBRID
@@ -244,5 +248,12 @@ class Searcher(
          * 0.2 to 0.7 for both models tested (0.80 mxbai, 0.75 nomic); 0.5 is its middle (SPEC §8.3).
          */
         const val LEXICAL_WEIGHT = 0.5
+
+        /**
+         * The usual 60 flattens ranks so much that a paragraph found by both lists, even 20th in each,
+         * outscores the vector list's first hit. Measured on three evaluation sets (SPEC §11, §16.8):
+         * k = 5 was better or equal everywhere (Compose 0.80/MRR 0.69, Art of War SE 0.75, Gutenberg 0.65).
+         */
+        const val RRF_K = 5
     }
 }

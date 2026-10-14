@@ -4,7 +4,17 @@ package rag.structure
  * One entry of a book's outline or table of contents. [page] is null when it has no target.
  * [offset] is the exact start in the book text when known (EPUB); it's carried to the chapter start.
  */
-data class OutlineEntry(val title: String, val page: Int?, val children: List<OutlineEntry> = emptyList(), val offset: Int? = null)
+data class OutlineEntry(
+    val title: String,
+    val page: Int?,
+    val children: List<OutlineEntry> = emptyList(),
+    val offset: Int? = null,
+    /**
+     * For a child: whether it starts its own document, rather than an anchor inside its parent's
+     * (EPUB: `chapter-2.xhtml` vs `chapter-1.xhtml#section`). Null when unknown (PDF).
+     */
+    val ownDocument: Boolean? = null,
+)
 
 /** Chapter starts from an outline, plus the starts of TOC ("Contents") entries found at any level. */
 data class FlattenedOutline(val chapters: List<ChapterStart>, val contents: List<ChapterStart>)
@@ -17,8 +27,9 @@ data class FlattenedOutline(val chapters: List<ChapterStart>, val contents: List
  * - some other top-level entries have no children (a mix of containers and plain chapters, as in
  *   "IX. Interview Questions" next to "VI. Big O"), or its title looks like a part ("Part II",
  *   "Book 1", or a Roman numeral like "IX.");
- * - its children don't look like sections: they aren't numbered under it ("5" → "5.1"), and they
- *   average at least [minChildPages] pages each (sections are short; CtCI's chapters are 6–25 pages).
+ * - its children don't look like sections: they aren't numbered under it ("5" → "5.1"); and either
+ *   they are separate documents (EPUB, see [OutlineEntry.ownDocument]) or, when that's unknown,
+ *   they average at least [minChildPages] pages each (sections are short; CtCI's chapters are 6–25 pages).
  * A part's children become chapters titled "Part › Child". The part keeps a chapter of its own
  * only when it starts before its first child (an intro page).
  */
@@ -49,6 +60,9 @@ object OutlineChapters {
         fun looksLikeSections(e: OutlineEntry, children: List<OutlineEntry>): Boolean {
             val number = leadingNumber.find(e.title)?.groupValues?.get(1)
             if (number != null && children.all { it.title.trim().startsWith("$number.") }) return true
+            // EPUB knows: separate documents are chapters, anchors in the parent's document are sections.
+            if (children.all { it.ownDocument == true }) return false
+            if (children.all { it.ownDocument == false }) return true
             val end = topStarts.firstOrNull { it > e.page!! } ?: (children.maxOf { it.page!! } + 1)
             val firstChild = children.minOf { it.page!! }
             return (end - firstChild).toDouble() / children.size < minChildPages

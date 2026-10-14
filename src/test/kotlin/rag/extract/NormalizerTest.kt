@@ -26,6 +26,11 @@ class NormalizerTest {
     }
 
     @Test
+    fun `zero-width characters are removed`() {
+        assertEquals("Endnotes 1–500", Normalizer.normalize("Endnotes 1\u2060–\u2060500\u200B\uFEFF"))
+    }
+
+    @Test
     fun `expands ligatures with NFKC`() {
         assertEquals("first offer", Normalizer.normalize("ﬁrst oﬀer"))
     }

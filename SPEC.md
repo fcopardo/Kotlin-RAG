@@ -59,9 +59,9 @@ rag index  --file <pdf|epub> --db <file> [--toc-pages <a-b[,c-d]>] [--location-s
            [--ollama-url http://localhost:11434] [--embed-model mxbai-embed-large] [--embed-dim 512]
 rag embed  --db <file> --book <bookId> [--ollama-url …] [--embed-model …] [--embed-dim …]  # (re)build embeddings only
 rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7
-rag eval   --db <file> --set <questions.jsonl> [--book <bookId>] [--k 5] [--mode all|hybrid|lexical|vector] [--details]
+rag eval   --db <file> --set <questions.jsonl> [--book <bookId>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
 rag books  --db <file>                                                                  # list indexed books
-rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json]
+rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json] [--lexical-weight 0.5] [--rrf-k 5]
 rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries]
 ```
 
@@ -100,7 +100,7 @@ rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries
 ### 5.2 Normalize
 Applied in this order, before splitting and before hashing:
 1. Unicode NFKC. This expands ligatures, e.g. `ﬁ` → `fi`.
-2. Normalize line endings to `\n`. Then remove soft hyphens (U+00AD), joining the word across the line end when one is at a line end. CtCI has 411 of them.
+2. Normalize line endings to `\n`. Remove zero-width characters (U+200B, U+2060 word joiner, U+FEFF); ZWJ and ZWNJ are kept because some scripts need them. Then remove soft hyphens (U+00AD), joining the word across the line end when one is at a line end. CtCI has 411 of them; Standard Ebooks puts word joiners in titles like `1–500`.
 3. Rejoin words hyphenated at line ends: `exam-\nple` → `example`. Do this only when the letters on **both** sides are lowercase, so `well-\nKnown` and `COVID-\n19` are kept. Real compounds split at a line end (`well-\nknown`) get joined; that's an accepted trade-off.
 4. Collapse runs of spaces and tabs into one space. Trim trailing spaces on each line. Collapse 3 or more newlines into 2, so a paragraph gap is always exactly one blank line.
 
@@ -335,7 +335,7 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
 
-**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Phase 6 moves to version 2: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6. Phase 8 moves to version 3: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number.
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 will be **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6.
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -403,8 +403,17 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
    - **In RAM:** only the binary vectors (plus their unit ids), cached per book. That's 64 bytes per paragraph at 512 dimensions, about 106 KB for this book. int8 vectors are read only for the `R` candidates.
    - Summary vectors (§5.7) go through the same binary → int8 path, with their own small per-book cache.
    - If Ollama is unreachable in `HYBRID` mode, log a warning and fall back to lexical only. In `VECTOR` mode, fail with exit code 5.
-4. **Fusion** (`HYBRID`): weighted reciprocal rank fusion, `score = Σ weight / (60 + rank)`, with weight **0.5** for the lexical list and **1** for the vector list. In single-path modes, use that path's own ranking.
-   - **Why 0.5:** on questions that share no words with their answer, keyword hits are noise. At equal weight they pushed good vector hits out of the top 5 (mxbai hybrid recall@5 0.65, below vector-only 0.80). Every weight from 0.2 to 0.7 gave the same, best recall for both models tested; 0.5 is the middle of that plateau, so it isn't tuned to single questions.
+4. **Fusion** (`HYBRID`): weighted reciprocal rank fusion, `score = Σ weight / (k + rank)`, with **k = 5**, weight **0.5** for the lexical list and **1** for the vector list. In single-path modes, use that path's own ranking. `--lexical-weight` and `--rrf-k` override both for calibration.
+   - **Why 0.5:** on questions that share no words with their answer, keyword hits are noise. At equal weight they pushed good vector hits out of the top 5 (mxbai hybrid recall@5 0.65, below vector-only 0.80).
+   - **Why k = 5:** with the common k = 60, scores are so flat that a paragraph in both lists, even 20th in each, outscores the vector list's first hit (1/80 + 0.5/80 > 1/61). That's why every weight from 0.2 to 0.5 gave identical results. Measured on three sets (2026-10-14, recall@5 / MRR):
+
+     | Setting | Compose (PDF) | Art of War, Standard Ebooks | Art of War, Gutenberg |
+     |---|---|---|---|
+     | k 60, weight 0.5 | 0.80 / 0.65 | 0.70 / 0.59 | 0.60 / 0.47 |
+     | **k 5, weight 0.5** | **0.80 / 0.69** | **0.75 / 0.62** | **0.65 / 0.52** |
+     | vector only | 0.80 / 0.70 | 0.80 / 0.65 | 0.65 / 0.56 |
+
+     k = 5 is better or equal on every set. **Hybrid still doesn't beat vector-only** on these sets with mxbai-embed-large: the keyword list adds nothing measurable there, and on paraphrases it costs one question on the Standard Ebooks set. It's kept because it finds rare exact identifiers that embeddings blur, and because it keeps search working when Ollama is down (§8.3 step 3). A confidence gate (use keyword hits only when they're strong or agree with the vector list) is the next candidate (§14).
    - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion. It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
    - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
    - At most **2** summary hits are returned per query, so passages aren't crowded out. They never replace exact hits.
@@ -453,7 +462,7 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
    4. `SUMMARY` hits in search, `--no-summaries`.
    5. Real-book run: measure time and size, and record them in §13.
 7. *(Planned)* Portability: desktop and Android from one code base (§15).
-8. *(Planned)* EPUB input (§16). Recommended order: **before** Phase 7. Its first step (the `BookSource` interface) is Phase 7's first step too, and an EPUB fixture gives the evaluation a second, committable book. Not decided yet.
+8. EPUB input (§16). **Done** (2026-10-14), built before Phases 6 and 7. Its first step, the `BookSource` interface, is Phase 7's first step too.
 
 ## 11. Acceptance criteria
 
@@ -593,6 +602,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
 - Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
+- **Confidence-gated fusion:** with mxbai-embed-large, hybrid never beat vector-only on three sets (§8.3). Candidates: use keyword hits only when they also appear in the vector top N, or when the query has rare terms (high IDF). Evaluate against all sets before changing the default.
 - **OCR text layers** (e.g. CtCI) carry recognition errors: `ot` for `of`, `II` for `//`, `�`. Possible later steps: report an OCR-quality score at index time, and treat lines that are only dot leaders plus `pg N` (CtCI's printed cross-references) as noise.
 - **Code without line numbers** (Kotlin for Android Developers, CtCI) stays prose paragraphs. Detecting it would need layout cues such as a monospaced font, through PDFBox's text positions. EPUB marks code explicitly (§16.3).
 - Store phrase vectors (instead of computing them at query time) if the cost of finding the closest phrase shows up in profiling. Deferred.
@@ -675,7 +685,7 @@ Vectors are comparable only if they come from the same model weights and the sam
 - **Cancellation:** cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it.
 
 
-## 16. EPUB input (Phase 8, planned)
+## 16. EPUB input (Phase 8, done)
 
 **Goal.** Index EPUB books with the same pipeline as PDFs. Only the first stage changes, turning the file into book text plus chapter starts and page starts. Segmentation (§5.4–5.5), keys, storage, embeddings, summaries and search are unchanged, and a search can mix PDF and EPUB books in one database.
 
@@ -717,7 +727,8 @@ Vectors are comparable only if they come from the same model weights and the sam
 Spine documents are parsed with `jsoup` in their reading order, and their text is appended to the book text. Each document starts a new paragraph.
 - **Blocks:** each block element becomes one paragraph, ending in a blank line (`\n\n`). Block elements are `p`, `h1`–`h6`, `li`, `dt`, `dd`, `blockquote` (its own text only, its child blocks separately), `figcaption`, `caption`, and `div`/`section` that contain text directly. Inline text is joined in order, and `<br>` becomes `\n`.
 - **Headings** are their own one-line paragraphs, as with PDFs (§14).
-- **Code:** `<pre>` (and block-level `<code>`) keeps its line breaks and becomes a code paragraph (`is_code`, §5.4). If its lines are numbered n, n+1, …, the numbers are removed with the same rule as §5.4.
+- **Parsing:** content documents are XHTML and are parsed in jsoup's (lenient) **XML** mode. HTML mode would treat an empty `<span epub:type="pagebreak"/>` as an opening tag that swallows the rest of the document.
+- **Code:** `<pre>` (and block-level `<code>`) keeps its line breaks and becomes a code paragraph (`is_code`, §5.4). Code gets a lighter normalization that keeps indentation: NFKC, line endings, zero-width and soft hyphens, trailing spaces. Blank lines are dropped so a listing stays one paragraph. If its lines are numbered n, n+1, …, the numbers are removed with the same rule as §5.4.
 - **Tables:** one paragraph per table. Each row is one line, with its cells joined by ` | `. The size cap (§5.4) splits large tables between rows.
 - **Left out:** `script`, `style`, `nav` inside content documents, `img` (only its `figcaption` is kept), and elements with `epub:type="pagebreak"`, whose position is recorded for §16.5.
 - **Footnotes** (the same intent as §5.1):
@@ -730,7 +741,7 @@ Spine documents are parsed with `jsoup` in their reading order, and their text i
 
 ### 16.4 Chapters
 - **From the TOC:** each top-level entry links to a document and, optionally, an element id (`chapter3.xhtml#sec2`). Its offset is where that document's or element's text starts in the book text.
-- **Parts:** the same rule as for PDF outlines (§5.3, `OutlineChapters`). Many EPUB TOCs nest sections under every chapter, and those must stay sections; real parts become `Part I › 3. The Road`. Page spans for the "at least 3 pages per child" test come from text length, at the location size (§16.5), since EPUB has no pages. Deeper levels are ignored (§14).
+- **Parts:** the same rule as for PDF outlines (§5.3, `OutlineChapters`). Many EPUB TOCs nest sections under every chapter, and those must stay sections; real parts become `Part I › 3. The Road`. EPUB adds a stronger signal than size: children that are **separate documents** are chapters, and children that are anchors inside the parent's document (`ch1.xhtml#sec`) are sections. Only when that's mixed does the "at least 3 pages per child" test apply, with page spans from text length at the location size (§16.5). The size test alone misjudged Standard Ebooks' *The Art of War*, whose 13 chapters average 2.2 locations. Deeper levels are ignored (§14).
 - **Boundaries** are as in §5.3: a chapter runs from its offset to the next one's, text before the first chapter is front matter (chapter 0), and chapters are numbered in reading order.
 - **Fallback:** a TOC with fewer than 2 usable entries is ignored. Each spine document that starts with a heading then becomes a chapter titled by that heading; documents without one join the previous chapter. With no headings at all, the whole book is one chapter titled "Book", as in §5.3.
 - `book.chapter_strategy` is `nav` (EPUB 3 nav), `ncx` (EPUB 2), `headings` or `fallback`.
@@ -752,23 +763,27 @@ interface BookSource {                  // shared with Phase 7 (§15.2)
 
 ### 16.7 Evaluation across formats
 Page numbers don't carry between a PDF and an EPUB edition, or between different EPUB page kinds. So an evaluation question may name its answer in a format-independent way:
-- `expectedAnchor`: a short, distinctive phrase (at most 8 words) from the answer passage. A hit counts if its paragraph contains the anchor (hash-normalized), or overlaps the paragraph that does. Each question must have `expectedPages`, `expectedAnchor`, or both; `expectedChapter` stays optional.
+- `expectedAnchor`: a short, distinctive phrase (at most 8 words) from the answer passage. A hit counts if its paragraph contains the anchor, comparing hash-normalized text. An anchor that spans two paragraphs never matches, so anchors are chosen within one paragraph. Each question must have `expectedPages`, `expectedAnchor`, or both; `expectedChapter` stays optional.
 - Committed sets for **copyrighted** books keep using page numbers only, so no quotes from them enter the repository. Anchors are for public-domain fixtures and for local, uncommitted sets.
 - `rag eval` reports which kind of target matched.
 
 ### 16.8 Fixtures
-- **Generated EPUBs**, built in the tests like `TestPdfs`, for each rule above:
-  - EPUB 3 nav and EPUB 2 NCX;
-  - parts with nested chapters;
-  - a page list, and its absence (locations);
-  - `noteref` / `footnote` asides, URL-only notes and prose notes;
-  - `<pre>` with and without line numbers, tables, soft hyphens;
-  - a `linear="no"` item;
-  - `rights.xml` / `encryption.xml` (DRM) and font-only obfuscation;
-  - fixed layout.
-- **A committed public-domain EPUB 3 from Standard Ebooks** (public-domain text, CC0 markup): a non-fiction or history title with endnotes and real chapter structure, chosen when Phase 8 starts.
-- **A committed Project Gutenberg EPUB 2** (`toc.ncx`, usually no page list), to cover the older format.
-- **A 20-question evaluation set** for the Standard Ebooks fixture, made like §11's (keyword questions plus mechanically checked paraphrases), with `expectedAnchor` targets. It's run with the **current settings unchanged** (model, 512 dims, keyword weight 0.5, 200 candidates), to test whether the calibration from the first book generalizes. Re-tuning happens only if recall drops by more than one question's worth relative to §11, and any re-tuning is checked against both sets.
+- **Generated EPUBs** (`TestEpubs`) for every rule above: EPUB 3 nav and EPUB 2 NCX on the same content (same unit keys), parts and numbered sections, page list mid-paragraph, footnotes/endnotes, `<pre>` with and without numbers, tables, soft hyphens, `linear="no"`, nav document in the spine, DRM (`rights.xml`, `sinf.xml`, encrypted content), font-only obfuscation, fixed layout, headings fallback, format sniffing.
+- **Committed public-domain books** (`src/test/resources/epub/`, sources and licenses in its README): the same Lionel Giles translation of *The Art of War* in two editions.
+  - `sun-tzu_the-art-of-war_lionel-giles.epub` (Standard Ebooks, EPUB 3, 593 KB): 27 chapters from the nav, the 13 chapters under the part "The Art of War", 794 endnotes kept as prose, no page list (locations).
+  - `pg132.epub` (Project Gutenberg #132, EPUB 2, 213 KB): 23 chapters from the NCX, translator's notes woven into each chapter.
+  - **Known limitation:** Gutenberg's note references are plain text (`… Sun Tzŭ: [1]`), not links, so their 107 `[n]` markers stay in the text. They're harmless for search; removing them would need a text heuristic.
+- **Evaluation set** `src/test/resources/eval/art-of-war-se.jsonl`: 20 questions across the 13 chapters (11 keyword, 9 paraphrases checked to share no content words with the anchor's paragraph), each with an `expectedAnchor` (public-domain text, so quoting is fine) and its chapter. Run with the settings calibrated on *Compose* unchanged:
+
+  | Edition | Lexical | Vector | Hybrid (k 60) | Hybrid (k 5, default) |
+  |---|---|---|---|---|
+  | Standard Ebooks | 0.55 | 0.80 | 0.70 | **0.75** |
+  | Gutenberg (same questions) | 0.50 | 0.65 | 0.60 | **0.65** |
+
+  - Keyword questions: 11/11 on Standard Ebooks, 10/11 on Gutenberg.
+  - Hybrid dropped two questions below vector-only. That exceeded the one-question rule, so the fusion was re-tuned against all three sets (§8.3, k = 5).
+  - `EpubEvalTest` (tag `ollama`) enforces hybrid ≥ 0.75, vector ≥ 0.80, and all keyword questions found.
+- Index size for both editions together, with embeddings: 4.96 MB (about 780 KB of text, 2,661 paragraphs).
 
 ### 16.9 Steps (each ends with passing tests)
 1. `BookSource` + `PdfBookSource`, used by `BookReader`. No behavior change (shared with Phase 7, step 1).

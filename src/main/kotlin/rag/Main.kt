@@ -14,6 +14,7 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
 import com.github.ajalt.clikt.parameters.types.choice
+import com.github.ajalt.clikt.parameters.types.double
 import com.github.ajalt.clikt.parameters.types.file
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
@@ -96,6 +97,8 @@ private class SearchCommand : CliktCommand(name = "search") {
     val json by option("--json", help = "Print results as JSON").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
+    val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
+    val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
 
     override fun run() = SqliteStore(db).use { store ->
         val scope = if (book != null) listOfNotNull(store.book(book!!)) else store.books()
@@ -105,7 +108,7 @@ private class SearchCommand : CliktCommand(name = "search") {
             models.firstOrNull()
         }
         val embedder = if (mode == "lexical" || model == null) null else OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
-        val hits = Searcher(store, embedder).search(query, k, book, Mode.valueOf(mode.uppercase()))
+        val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK).search(query, k, book, Mode.valueOf(mode.uppercase()))
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use
@@ -132,6 +135,8 @@ private class EvalCommand : CliktCommand(name = "eval") {
     val details by option("--details", help = "Show the rank of every question").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
+    val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
+    val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
 
     override fun run() = SqliteStore(db).use { store ->
         val questions = Evaluation.load(set)
@@ -140,7 +145,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
         val model = embedModel ?: scope.mapNotNull { it.embedModel }.distinct().singleOrNull()
         val embedder = model?.let { OllamaEmbedder(EmbeddingModel.forName(it), ollamaUrl) }
         val modes = if (mode == "all") listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID) else listOf(Mode.valueOf(mode.uppercase()))
-        val results = Evaluation.run(Searcher(store, embedder), questions, modes, k, book)
+        val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK), questions, modes, k, book)
         val kinds = questions.groupingBy { it.kind }.eachCount().toSortedMap()
 
         echo("${questions.size} questions (${kinds.entries.joinToString { "${it.value} ${it.key}" }}), top $k")

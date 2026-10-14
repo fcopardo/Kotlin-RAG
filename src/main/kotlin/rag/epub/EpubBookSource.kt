@@ -52,11 +52,12 @@ class EpubBookSource(private val textBuilder: EpubTextBuilder = EpubTextBuilder(
 
         // Chapters: the TOC through the shared parts rule; else leading headings; else one chapter.
         val locationSize = options.locationSize.coerceAtLeast(1)
-        fun outline(e: NavEntry): OutlineEntry {
+        fun outline(e: NavEntry, parent: NavEntry? = null): OutlineEntry {
             val at = e.path?.let { offset(it, e.fragment) }
-            return OutlineEntry(e.title, at?.let { it / locationSize + 1 }, e.children.map(::outline), at)
+            val ownDocument = parent?.let { e.path != null && e.path != it.path }
+            return OutlineEntry(e.title, at?.let { it / locationSize + 1 }, e.children.map { outline(it, e) }, at, ownDocument)
         }
-        val fromToc = OutlineChapters.flatten(pkg.toc.map(::outline)).chapters
+        val fromToc = OutlineChapters.flatten(pkg.toc.map { outline(it) }).chapters
         val headings = built.leadingHeadings.values.sortedBy { it.second }
             .map { (title, at) -> ChapterStart(title, at / locationSize + 1, at) }
         val plan = when {
