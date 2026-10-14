@@ -157,6 +157,9 @@ class SummaryIndexerTest {
             assertTrue("slot table" in h.paragraph.text)
         }
         assertTrue(Searcher(store, embedder, includeSummaries = false).search("slot table fact", k = 10).none { it.matchType == MatchType.SUMMARY })
+        // Summaries are added on top of the k passages, never instead of them.
+        val passages = hits.filter { it.matchType != MatchType.SUMMARY }.map { it.paragraph.unitKey }
+        assertEquals(Searcher(store, embedder, includeSummaries = false).search("slot table fact", k = 10).map { it.paragraph.unitKey }, passages)
     }
 
     @Test

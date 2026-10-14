@@ -127,6 +127,7 @@ rag search --db <file> -q "<question or text>" [options]
 | `--ollama-url` | `http://localhost:11434` | Ollama server. |
 | `--lexical-weight`, `--rrf-k` | `0.5`, `5` | Fusion settings, for calibration; see SPEC.md §8.3. |
 | `--no-summaries` | off | Search paragraphs only, even if the book has summaries. |
+| `--front-matter-weight`, `--summary-weight`, `--max-summary-hits` | `0.5`, `1.0`, `2` | More calibration knobs (SPEC.md §8.3). |
 
 How a search works:
 
@@ -139,6 +140,9 @@ How a search works:
    keyword ranking at half weight. Each hit says how it was found: `HYBRID` (both), `LEXICAL` or
    `VECTOR`.
 5. For each paragraph, the **closest phrase** (sentence) is picked.
+6. If the book has summaries (`rag summarize`), up to 2 summary hits are **added** to the k
+   passages when they rank among the top k, so a result has at most k + 2 hits. Front-matter
+   paragraphs (copyright, dedications) count half, so they don't bury real answers.
 
 If Ollama is down, `hybrid` search falls back to keywords with a warning; `vector` search fails.
 
@@ -202,7 +206,8 @@ Writes summaries with a small local model: one per ~1,500-token section, one per
 for the whole book. They let search answer "what is chapter 5 about?" or "what does this book
 cover?", which no single paragraph answers. Summaries are embedded with the book's own embedding
 model and show up in search as `[SUMMARY section|chapter|book]` hits (at most 2 per query) with the
-summary text and the best paragraph inside it.
+summary text and the best paragraph inside it. They're added on top of the k passages, so they
+never push answers to specific questions out of the results.
 
 - For a 205-page book: 62 summaries in about 4 minutes on an Apple M4 Pro, +156 KB of storage.
   The model uses ~2.5 GB of RAM, only while summarizing.

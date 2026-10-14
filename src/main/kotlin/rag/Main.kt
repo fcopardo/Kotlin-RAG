@@ -102,6 +102,9 @@ private class SearchCommand : CliktCommand(name = "search") {
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
     val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
     val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
+    val frontMatterWeight by option("--front-matter-weight", help = "Score factor for front-matter paragraphs (1 = off)").double().default(Searcher.FRONT_MATTER_WEIGHT)
+    val summaryWeight by option("--summary-weight", help = "Weight of summaries in hybrid fusion").double().default(Searcher.SUMMARY_WEIGHT)
+    val maxSummaryHits by option("--max-summary-hits", help = "At most this many summary hits per query").int().default(Searcher.MAX_SUMMARY_HITS)
 
     override fun run() = SqliteStore(db).use { store ->
         val scope = if (book != null) listOfNotNull(store.book(book!!)) else store.books()
@@ -111,7 +114,7 @@ private class SearchCommand : CliktCommand(name = "search") {
             models.firstOrNull()
         }
         val embedder = if (mode == "lexical" || model == null) null else OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
-        val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries)
+        val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
             .search(query, k, book, Mode.valueOf(mode.uppercase()))
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
@@ -143,6 +146,9 @@ private class EvalCommand : CliktCommand(name = "eval") {
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
     val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
     val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
+    val frontMatterWeight by option("--front-matter-weight", help = "Score factor for front-matter paragraphs (1 = off)").double().default(Searcher.FRONT_MATTER_WEIGHT)
+    val summaryWeight by option("--summary-weight", help = "Weight of summaries in hybrid fusion").double().default(Searcher.SUMMARY_WEIGHT)
+    val maxSummaryHits by option("--max-summary-hits", help = "At most this many summary hits per query").int().default(Searcher.MAX_SUMMARY_HITS)
 
     override fun run() = SqliteStore(db).use { store ->
         val questions = Evaluation.load(set)
@@ -151,7 +157,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
         val model = embedModel ?: scope.mapNotNull { it.embedModel }.distinct().singleOrNull()
         val embedder = model?.let { OllamaEmbedder(EmbeddingModel.forName(it), ollamaUrl) }
         val modes = if (mode == "all") listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID) else listOf(Mode.valueOf(mode.uppercase()))
-        val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK), questions, modes, k, book)
+        val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits), questions, modes, k, book)
         val kinds = questions.groupingBy { it.kind }.eachCount().toSortedMap()
 
         echo("${questions.size} questions (${kinds.entries.joinToString { "${it.value} ${it.key}" }}), top $k")

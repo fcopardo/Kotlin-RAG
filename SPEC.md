@@ -62,6 +62,7 @@ rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollam
 rag eval   --db <file> --set <questions.jsonl> [--book <bookId>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
 rag books  --db <file>                                                                  # list indexed books
 rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json] [--lexical-weight 0.5] [--rrf-k 5]
+           [--front-matter-weight 0.5] [--summary-weight 1.0] [--max-summary-hits 2]   # calibration knobs
 rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries]
 ```
 
@@ -418,9 +419,13 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
      | vector only | 0.80 / 0.70 | 0.80 / 0.65 | 0.65 / 0.56 |
 
      k = 5 is better or equal on every set. **Hybrid still doesn't beat vector-only** on these sets with mxbai-embed-large: the keyword list adds nothing measurable there, and on paraphrases it costs one question on the Standard Ebooks set. It's kept because it finds rare exact identifiers that embeddings blur, and because it keeps search working when Ollama is down (§8.3 step 3). A confidence gate (use keyword hits only when they're strong or agree with the vector list) is the next candidate (§14).
-   - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion. It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
-   - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
-   - At most **2** summary hits are returned per query, so passages aren't crowded out. They never replace exact hits.
+   - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion (weight 1). It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
+   - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text, `Hit.summaryLevel` to its level, and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
+   - **Summary hits are added on top of the k passages, never instead of them.** A search returns the same k passages it would without summaries, plus up to **2** summary hits that rank within the first k positions, in score order. So a result has at most k + 2 hits.
+     - **Why:** when summary hits took passage slots, *Compose* hybrid recall@5 fell from 0.80 to 0.70 (paraphrases 0.56 → 0.33).
+     - No single summary weight fixed it: weights that restored recall (≤ 0.7) pushed the chapter and book summaries out of the top 3, and capping at 1 summary hit lost the book summary.
+     - Adding them instead keeps passage recall exactly as without summaries (passage scores don't depend on the summary list): 0.80 with summaries, measured.
+   - **Front matter is down-weighted:** a front-matter (chapter 0) paragraph's fused score is multiplied by **0.5**. Copyright pages, "for sale at…" and dedications match generic questions ("what does this book cover") and buried the book summary at #5. With 0.5 it's #2, after the Prelude's chapter summary. Any factor from 0.3 to 0.7 gave the same top 3; 0.5 is the middle. The evaluation sets are unchanged by it (*Compose* 0.80, *Art of War* 0.75 and 0.65).
 5. **Closest phrase:** for each paragraph hit, the phrase with the best BM25 in `phrase_fts` limited to that paragraph's children. If no phrase matches lexically, which is common for vector-only hits, embed that paragraph's phrases on the fly and pick the one most similar to the query. For v1, phrase vectors are not stored.
    - For a `SUMMARY` hit, use the best paragraph inside the summary's span: the best BM25 paragraph whose offsets fall in `char_start..char_end`, else the span's first paragraph. Then take that paragraph's closest phrase as above.
    - Unit text comes from the cached book text by offsets. Only the books in the results are loaded, and an LRU cache holds at most 2 books.
@@ -531,7 +536,8 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - 8 chapter summaries (front matter has none) and 1 book summary, each within its word cap. ✅
 - **Grounding:** at least 95% of the CamelCase identifiers in all summaries (e.g. `SlotTable`, `LaunchedEffect`) appear in the book text, a cheap check for invented API names. ✅ **111 of 112.**
 - "what is the state snapshot system chapter about" → a `SUMMARY` hit for "5. State snapshot system" in the top 3. ✅ (#3, after two paragraphs of that chapter)
-- "what does this book cover" → the book summary. ⚠️ It's at **#5**, not the top 3 the spec asked for. Front-matter boilerplate ("This book is for sale at…", dedications) ranks above it, and the Prelude's chapter summary ("This book is about…") is at #3. The test checks the top 5; front-matter weighting is an open question (§14).
+- "what does this book cover" → the book summary in the top 3. ✅ **#2**, after the Prelude's chapter summary. (It was #5 before front-matter down-weighting and additive summary hits, §8.3.)
+- **Summaries don't cost passage recall:** *Compose* hybrid recall@5 with summaries is ≥ 0.80. ✅ 0.80. (It was 0.70 while summary hits took passage slots.)
 - Quality, read by hand: chapter and section summaries are accurate and specific. One soft spot: chapter 3's summary says the runtime "is implemented by `AndroidComposeView`", a slight conflation of the book's integration-layer description.
 - Hits carry `summaryLevel` (`section`, `group`, `chapter`, `book`), because a book summary's `chapter` is only the chapter of its chosen paragraph.
 
@@ -607,7 +613,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
 - Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
-- **Front matter in search:** copyright pages, "for sale at", dedications and social-media notes match generic questions ("what does this book cover") and outrank real answers, including the book summary (§11). Candidates: down-weight chapter 0, or drop paragraphs that are only links or boilerplate.
+- **Boilerplate chapters outside front matter:** front matter (chapter 0) is down-weighted (§8.3). EPUB boilerplate that comes as its own TOC chapter isn't: Standard Ebooks' "Titlepage", "Imprint", "Colophon" and "Uncopyright", and Gutenberg's license. Candidates: a title list, or treating tiny leading/trailing chapters as front/back matter.
 - **Confidence-gated fusion:** with mxbai-embed-large, hybrid never beat vector-only on three sets (§8.3). Candidates: use keyword hits only when they also appear in the vector top N, or when the query has rare terms (high IDF). Evaluate against all sets before changing the default.
 - **OCR text layers** (e.g. CtCI) carry recognition errors: `ot` for `of`, `II` for `//`, `�`. Possible later steps: report an OCR-quality score at index time, and treat lines that are only dot leaders plus `pg N` (CtCI's printed cross-references) as noise.
 - **Code without line numbers** (Kotlin for Android Developers, CtCI) stays prose paragraphs. Detecting it would need layout cues such as a monospaced font, through PDFBox's text positions. EPUB marks code explicitly (§16.3).

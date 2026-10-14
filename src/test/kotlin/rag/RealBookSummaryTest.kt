@@ -45,6 +45,16 @@ class RealBookSummaryTest {
         SummaryIndexer(store, OllamaSummarizer(model!!), embedder).summarize(bookId)
     }
 
+    @Test
+    fun `summaries don't cost passage recall`() {
+        val questions = rag.search.Evaluation.load(File("src/test/resources/eval/compose-internals.jsonl"))
+        val hybrid = rag.search.Evaluation.summarize(
+            rag.search.Evaluation.run(Searcher(store, embedder), questions, listOf(rag.search.Mode.HYBRID)), k = 5,
+        ).single()
+        println("with summaries: hybrid recall@5 %.2f".format(hybrid.recall))
+        assertTrue(hybrid.recall >= 0.80, "hybrid recall@5 with summaries ${hybrid.recall}")
+    }
+
     @AfterAll
     fun cleanUp() {
         if (::store.isInitialized) store.close()
@@ -75,11 +85,11 @@ class RealBookSummaryTest {
     fun `chapter- and book-level questions find summaries`() {
         val searcher = Searcher(store, embedder)
         val snapshot = searcher.search("what is the state snapshot system chapter about", k = 3)
-        assertTrue(snapshot.any { it.matchType == MatchType.SUMMARY && it.chapter.title == "5. State snapshot system" }, snapshot.map { it.matchType to it.chapter.title }.toString())
+        assertTrue(snapshot.take(3).any { it.matchType == MatchType.SUMMARY && it.chapter.title == "5. State snapshot system" }, snapshot.map { it.matchType to it.chapter.title }.toString())
 
-        // Measured at #5 (2026-10-14): front-matter boilerplate ("This book is for sale at…") ranks above it.
-        val cover = searcher.search("what does this book cover", k = 5)
-        assertTrue(cover.any { it.summaryLevel == "book" }, cover.map { it.matchType to it.chapter.title }.toString())
+        // #2 since front matter is down-weighted and summaries are added on top of passages (was #5).
+        val cover = searcher.search("what does this book cover", k = 3)
+        assertTrue(cover.take(3).any { it.summaryLevel == "book" }, cover.map { it.matchType to it.chapter.title }.toString())
         assertEquals(store.units(1, UnitKind.CHAPTER).size, 9)
     }
 }

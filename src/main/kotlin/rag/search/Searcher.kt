@@ -73,6 +73,12 @@ class Searcher(
     private val rrfK: Int = RRF_K,
     /** Whether summaries (SPEC §5.7) take part in search when a book has them. */
     private val includeSummaries: Boolean = true,
+    /** Multiplies the fused score of front-matter paragraphs (chapter 0); 1 turns it off (SPEC §8.3). */
+    private val frontMatterWeight: Double = FRONT_MATTER_WEIGHT,
+    /** Weight of the summary list in the fusion (SPEC §8.3). */
+    private val summaryWeight: Double = SUMMARY_WEIGHT,
+    /** At most this many SUMMARY hits per query, so passages aren't crowded out. */
+    private val maxSummaryHits: Int = MAX_SUMMARY_HITS,
 ) {
     private val texts = object : LinkedHashMap<Long, String>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
@@ -108,14 +114,18 @@ class Searcher(
         // Paragraphs and summaries are fused together: keys say which is which.
         val fused = Fusion.rrf(
             listOf(lexical.map { Key.Paragraph(it) }, dense.map { Key.Paragraph(it) }, summaries.map { Key.Summary(it) }),
-            k = rrfK, weights = listOf(lexicalWeight, 1.0, 1.0),
-        )
+            k = rrfK, weights = listOf(lexicalWeight, 1.0, summaryWeight),
+        ).let(::downWeightFrontMatter)
 
+        // k passages, exactly as without summaries; summary hits are added on top of them (up to
+        // maxSummaryHits, when they rank within the first k), so they never crowd passages out.
         val seen = exact.map { it.second }.toMutableSet()
         val hits = exact.map { it.first }.toMutableList()
+        var passages = hits.size
         var summaryHits = 0
-        for ((key, score) in fused) {
-            if (hits.size >= k) break
+        for ((position, entry) in fused.withIndex()) {
+            val (key, score) = entry
+            if (passages >= k) break
             when (key) {
                 is Key.Paragraph -> {
                     if (!seen.add(key.id)) continue
@@ -126,14 +136,24 @@ class Searcher(
                         else -> MatchType.VECTOR
                     }
                     hits += hit(paragraph, null, type, score, context)
+                    passages++
                 }
                 is Key.Summary -> {
-                    if (summaryHits >= MAX_SUMMARY_HITS) continue
+                    if (summaryHits >= maxSummaryHits || position >= k) continue
                     summaryHit(key.id, score, context)?.let { hits += it; summaryHits++ }
                 }
             }
         }
-        return hits.take(k)
+        return hits
+    }
+
+    /** Front matter (copyright, "for sale at", dedications) matches generic questions; lower it. */
+    private fun downWeightFrontMatter(fused: List<Pair<Key, Double>>): List<Pair<Key, Double>> {
+        if (frontMatterWeight == 1.0) return fused
+        return fused.map { (key, score) ->
+            val front = key is Key.Paragraph && store.unit(key.id)?.chapter == 0
+            key to if (front) score * frontMatterWeight else score
+        }.sortedByDescending { it.second }
     }
 
     private sealed interface Key {
@@ -316,6 +336,11 @@ class Searcher(
          * k = 5 was better or equal everywhere (Compose 0.80/MRR 0.69, Art of War SE 0.75, Gutenberg 0.65).
          */
         const val RRF_K = 5
+
+        /** Calibrated on the evaluation sets and "what does this book cover" (SPEC §8.3). */
+        const val FRONT_MATTER_WEIGHT = 0.5
+
+        const val SUMMARY_WEIGHT = 1.0
 
         /** Summary hits per query, so passages aren't crowded out (SPEC §8.3). */
         const val MAX_SUMMARY_HITS = 2
