@@ -75,7 +75,7 @@ class Searcher(
 
         val lexicalSet = lexical.toSet()
         val denseSet = dense.toSet()
-        val fused = Fusion.rrf(listOf(lexical, dense).filter { it.isNotEmpty() })
+        val fused = Fusion.rrf(listOf(lexical, dense), weights = listOf(LEXICAL_WEIGHT, 1.0))
         val ranked = fused.map { (id, score) ->
             val type = when {
                 id in lexicalSet && id in denseSet -> MatchType.HYBRID
@@ -149,7 +149,8 @@ class Searcher(
 
     /** Binary Hamming first pass, then int8 rescoring of the closest candidates. Unit ids, best first. */
     private fun vectorSearch(full: FloatArray, books: List<BookRow>, n: Int): List<Long> {
-        val rescoreCount = maxOf(10 * n / 4, 100)
+        // Measured on the eval set: 200 candidates make 1-bit + int8 match float search; 100 lost a hit.
+        val rescoreCount = maxOf(10 * n / 4, 200)
         val scored = books.filter { it.embedModel != null && it.embedDim != null }.flatMap { book ->
             val dim = book.embedDim!!
             if (dim > full.size) throw RagException.ModelMismatch("Book ${book.id} has $dim-dim vectors; the query has ${full.size}")
@@ -209,4 +210,14 @@ class Searcher(
     private fun chapterRef(c: StoredUnit) = ChapterRef(c.ordinal, c.title ?: "", c.pageStart, c.pageEnd, c.key)
 
     private fun text(bookId: Long): String = texts.getOrPut(bookId) { store.bookText(bookId) }
+
+    companion object {
+        /**
+         * Weight of the keyword list in the fusion; the vector list has 1. On questions that share no
+         * words with the answer, keyword hits are noise and at full weight they push out good vector
+         * hits (mxbai-embed-large hybrid recall@5 0.65 at 1.0). The eval set showed a flat optimum from
+         * 0.2 to 0.7 for both models tested (0.80 mxbai, 0.75 nomic); 0.5 is its middle (SPEC §8.3).
+         */
+        const val LEXICAL_WEIGHT = 0.5
+    }
 }

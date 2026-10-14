@@ -20,6 +20,14 @@ class FusionTest {
     }
 
     @Test
+    fun `weights scale each list's contribution`() {
+        val scores = Fusion.rrf(listOf(listOf("a"), listOf("b")), weights = listOf(0.5, 1.0)).toMap()
+
+        assertEquals(0.5 / 61, scores["a"]!!, 1e-12)
+        assertEquals(listOf("b", "a"), Fusion.rrf(listOf(listOf("a"), listOf("b")), weights = listOf(0.5, 1.0)).map { it.first })
+    }
+
+    @Test
     fun `fts query quotes words so syntax is inert`() {
         assertEquals("\"slot\" OR \"table\" OR \"near\" OR \"x\"", FtsQuery.anyTerm("slot AND table NEAR(x) *"))
     }

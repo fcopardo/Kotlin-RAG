@@ -60,7 +60,7 @@ class OllamaEmbedderTest {
         """{"model":"nomic-embed-text","embeddings":[${List(count) { "[3.0,4.0,0.0]" }.joinToString(",")}]}"""
 
     private fun embedder(url: String, batchSize: Int = 32) =
-        OllamaEmbedder(baseUrl = url, batchSize = batchSize, sleep = { sleeps += it })
+        OllamaEmbedder(EmbeddingModel.NOMIC_EMBED_TEXT, url, batchSize = batchSize, sleep = { sleeps += it })
 
     @Test
     fun `adds document and query prefixes`() {

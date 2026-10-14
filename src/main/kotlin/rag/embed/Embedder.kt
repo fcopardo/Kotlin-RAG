@@ -30,7 +30,19 @@ data class EmbeddingModel(
             queryPrefix = "search_query: ",
         )
 
-        private val known = listOf(NOMIC_EMBED_TEXT).associateBy { it.name }
+        /** Queries need an instruction prefix; documents need none. Trained for Matryoshka and binary quantization. */
+        val MXBAI_EMBED_LARGE = EmbeddingModel(
+            name = "mxbai-embed-large",
+            queryPrefix = "Represent this sentence for searching relevant passages: ",
+        )
+
+        /**
+         * Default for new indexes. Chosen on the eval set (SPEC §11): hybrid recall@5 0.80 vs 0.75 for
+         * nomic-embed-text, at about twice the model RAM (~687 vs ~370 MB loaded) and embedding time.
+         */
+        val DEFAULT = MXBAI_EMBED_LARGE
+
+        private val known = listOf(NOMIC_EMBED_TEXT, MXBAI_EMBED_LARGE).associateBy { it.name }
 
         /** Known config for [name], or one without prefixes. */
         fun forName(name: String): EmbeddingModel = known[name.substringBefore(':')] ?: EmbeddingModel(name)

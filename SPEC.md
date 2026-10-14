@@ -54,9 +54,10 @@ The original spec used "index" for two different things. Use these terms instead
 
 ```
 rag index  --pdf <file> --db <file> [--toc-pages <a-b[,c-d]>] [--locale en] [--reindex] [--no-embed]
-           [--ollama-url http://localhost:11434] [--embed-model nomic-embed-text] [--embed-dim 512]
+           [--ollama-url http://localhost:11434] [--embed-model mxbai-embed-large] [--embed-dim 512]
 rag embed  --db <file> --book <bookId> [--ollama-url …] [--embed-model …] [--embed-dim …]  # (re)build embeddings only
 rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7
+rag eval   --db <file> --set <questions.jsonl> [--book <bookId>] [--k 5] [--mode all|hybrid|lexical|vector] [--details]
 rag books  --db <file>                                                                  # list indexed books
 rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json]
 rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries]
@@ -68,6 +69,7 @@ rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries
 - `--no-embed` stores the structure only; run `rag embed` later.
 - `embed` rebuilds the embeddings for an already-indexed book without re-parsing it. Use it to switch models or dimensions, or to resume after an interrupted run. Changing the model or `--embed-dim` drops the book's existing vectors first.
 - `--mode` defaults to `hybrid`.
+- `eval` runs an evaluation set (§11) in each mode and prints recall@k, MRR, chapter recall and recall per question kind; `--details` shows each question's rank.
 - One DB can hold many books.
 - Exit codes: `0` ok, `2` bad arguments, `3` PDF unreadable/encrypted/no text, `4` DB error, `5` embedding backend unavailable or model mismatch.
 
@@ -134,9 +136,9 @@ Only one level of chapters is supported in v1. Nested entries (`1.1 …`) are tr
 
 ### 5.6 Embed
 - Embed every **paragraph**. Phrases, chapters and the book are not embedded in v1. At retrieval time a phrase is too short to carry much meaning, and a chapter is too long for one vector to represent.
-- **Embedding input:** `"search_document: " + chapterTitle + "\n" + paragraphText`. For prose, `paragraphText` has its newlines flattened to spaces; code keeps its lines. Prefixing the chapter title adds context that a short paragraph lacks. The `search_document:` prefix is what `nomic-embed-text` requires for documents. It comes from the `EmbeddingModel` config (§8.1) so another model can use a different prefix or none.
+- **Embedding input:** `documentPrefix + chapterTitle + "\n" + paragraphText`. For prose, `paragraphText` has its newlines flattened to spaces; code keeps its lines. Prefixing the chapter title adds context that a short paragraph lacks. The prefixes come from the `EmbeddingModel` config (§8.1): the default `mxbai-embed-large` uses no document prefix and an instruction prefix on queries; `nomic-embed-text` uses `search_document: ` / `search_query: `.
 - Send paragraphs in batches of **32** per request (`POST /api/embed` with `input: [...]`).
-- **Matryoshka truncation:** keep the first `--embed-dim` dimensions (default **512**, out of 768; chosen over 256 on 2026-10-14 after the measurements in §11) and L2-normalize again. `nomic-embed-text` v1.5 is trained for 768/512/256/128/64. Ollama returns vectors that are already normalized, so truncation happens client-side after normalization. That's a close approximation of nomic's recipe (layer norm → truncate → normalize), and the evaluation in §11 checks the loss. `--embed-dim` must be a multiple of 64.
+- **Matryoshka truncation:** keep the first `--embed-dim` dimensions (default **512**, chosen over 256 on 2026-10-14 after the measurements in §11) and L2-normalize again. Both supported models are trained for truncation: `mxbai-embed-large` (1,024 dims; also trained for binary quantization) and `nomic-embed-text` v1.5 (768/512/256/128/64). Ollama returns vectors that are already normalized, so truncation happens client-side after normalization, a close approximation of the models' recipes; the evaluation in §11 checks the loss. `--embed-dim` must be a multiple of 64 and at most the model's size.
 - **Quantize and store two forms. Floats are never stored.**
   - **int8:** `q[i] = round(v[i] / scale)` with `scale = max|v| / 127`. That's 1 byte per dimension plus a 4-byte scale. It's used to rescore candidates.
   - **binary:** bit `i` is set when `v[i] > 0`, packed into 64-bit words. That's 1 bit per dimension. It's used for the first-pass scan.
@@ -184,7 +186,7 @@ User prompt per level (`{…}` are filled in):
 
 #### 5.7.4 Storage and embedding
 - Summaries are generated text, so they're stored **with** their text (`summary` table, §7). This is the one exception to "text stored once".
-- Each summary is embedded like a paragraph. The input is `"search_document: " + chapterTitle + "\n" + summaryText` (the book title for the book summary). It's truncated and quantized like paragraphs (512 dimensions, int8 + bits) and indexed in `summary_fts`.
+- Each summary is embedded like a paragraph. The input is `documentPrefix + chapterTitle + "\n" + summaryText` (the book title for the book summary). It's truncated and quantized like paragraphs (512 dimensions, int8 + bits) and indexed in `summary_fts`.
 - `book.summary_model`, `book.summary_prompt` and `book.summary_status` (`none` / `partial` / `complete`) track progress.
 
 #### 5.7.5 Resuming, idempotency, invalidation
@@ -243,7 +245,7 @@ CREATE TABLE book (
   extractor     TEXT NOT NULL,             -- e.g. "pdfbox-3.0.8/norm-v1"
   chapter_strategy TEXT NOT NULL,          -- outline | toc | fallback
   page_offset   INTEGER,                   -- TOC strategy only
-  embed_model   TEXT,                      -- e.g. "nomic-embed-text"
+  embed_model   TEXT,                      -- e.g. "mxbai-embed-large"
   embed_dim     INTEGER,                   -- after truncation, e.g. 512
   embed_status  TEXT NOT NULL DEFAULT 'none' CHECK (embed_status IN ('none','partial','complete')),
   summary_model TEXT,                      -- Phase 6, e.g. "llama3.2:3b"
@@ -331,7 +333,7 @@ interface Embedder {
 }
 ```
 - `OllamaEmbedder`: sends `POST {ollamaUrl}/api/embed` with body `{"model": m, "input": [...]}` and reads `embeddings`. At startup it checks the model with `GET /api/tags` and gets `dim` from a probe embedding.
-- Default model **`nomic-embed-text`** (768 dimensions). Document prefix `"search_document: "`, query prefix `"search_query: "`. Prefixes are per-model config so `mxbai-embed-large` or `bge-m3` can be swapped in.
+- Default model **`mxbai-embed-large`** (1,024 dimensions, ~669 MB download, ~687 MB loaded). No document prefix; query prefix `"Represent this sentence for searching relevant passages: "`. Chosen on 2026-10-14 over `nomic-embed-text` (768 dims, ~370 MB loaded, document/query prefixes `"search_document: "` / `"search_query: "`) because of the evaluation in §11. nomic stays supported with `--embed-model nomic-embed-text`. Unknown models get no prefixes.
 - Truncation and quantization (§5.6) happen in a pure `Quantizer` after the embedder, so every `Embedder` gets them.
 - **Model consistency:** a search must use the same model (and dimension) as the book's `embed_model` and `embed_dim`. If they don't match, vector search for that book fails with exit code 5 and a hint to run `rag embed`. It never silently mixes vectors from different models.
 - Tests use a `FakeEmbedder`: a deterministic hashed bag-of-words vector, so they don't need Ollama (§11).
@@ -377,12 +379,13 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
 2. **Lexical path** (`HYBRID`, `LEXICAL`). Run FTS5 BM25 over `para_fts` and take the top `N = max(4k, 20)`. The query is the question's distinct words, each quoted (so FTS syntax is inert) and joined with `OR`. English stop words (`how`, `the`, `which` …) are dropped unless nothing else is left, because in an OR query they match nearly every paragraph and push the meaningful words down.
 3. **Vector path** (`HYBRID`, `VECTOR`). Binary first pass, then int8 rescoring:
    - Call `embedQuery(query)`, then truncate and normalize it. The query stays float.
-   - **First pass:** compute the Hamming distance between the query's sign bits and every paragraph's `vec_bits` in scope. Use `Long.bitCount` on 64-bit words; at 512 dimensions that's 8 words per paragraph. Keep the `R = max(10·k, 100)` nearest.
+   - **First pass:** compute the Hamming distance between the query's sign bits and every paragraph's `vec_bits` in scope. Use `Long.bitCount` on 64-bit words; at 512 dimensions that's 8 words per paragraph. Keep the `R = max(10·k, 200)` nearest. With 100 candidates the evaluation lost a hit that float search found; with 200, compact search matched float search.
    - **Rescore:** read those `R` rows' `vec_i8` and `scale` from SQLite and compute `dot(query, q·scale)`. Keep the top `N`.
    - **In RAM:** only the binary vectors (plus their unit ids), cached per book. That's 64 bytes per paragraph at 512 dimensions, about 106 KB for this book. int8 vectors are read only for the `R` candidates.
    - Summary vectors (§5.7) go through the same binary → int8 path, with their own small per-book cache.
    - If Ollama is unreachable in `HYBRID` mode, log a warning and fall back to lexical only. In `VECTOR` mode, fail with exit code 5.
-4. **Fusion** (`HYBRID`): reciprocal rank fusion, `score = Σ 1 / (60 + rank)` over the lexical and vector lists. In single-path modes, use that path's own ranking.
+4. **Fusion** (`HYBRID`): weighted reciprocal rank fusion, `score = Σ weight / (60 + rank)`, with weight **0.5** for the lexical list and **1** for the vector list. In single-path modes, use that path's own ranking.
+   - **Why 0.5:** on questions that share no words with their answer, keyword hits are noise. At equal weight they pushed good vector hits out of the top 5 (mxbai hybrid recall@5 0.65, below vector-only 0.80). Every weight from 0.2 to 0.7 gave the same, best recall for both models tested; 0.5 is the middle of that plateau, so it isn't tuned to single questions.
    - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion. It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
    - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
    - At most **2** summary hits are returned per query, so passages aren't crowded out. They never replace exact hits.
@@ -429,6 +432,7 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
    3. Summary embedding + `summary_fts`; `rag summarize`, `rag dump --summaries`.
    4. `SUMMARY` hits in search, `--no-summaries`.
    5. Real-book run: measure time and size, and record them in §13.
+7. *(Planned)* Portability: desktop and Android from one code base (§15).
 
 ## 11. Acceptance criteria
 
@@ -454,8 +458,9 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - `--reindex` leaves no orphaned FTS rows (count rows before and after).
 - Identical paragraphs are embedded once (count the embedder's inputs).
 
-**Integration tests** (JUnit tag `ollama`, skipped unless the env var `RAG_OLLAMA=1` is set and `nomic-embed-text` is pulled):
-- `OllamaEmbedder` returns 768-dimensional vectors. `embedQuery("bicycle speed")` is closer to `embedDocuments(["The bike went really fast."])` than to `["The soup was cold."]`.
+**Integration tests** (JUnit tag `ollama`, skipped unless the env var `RAG_OLLAMA=1` is set and both `mxbai-embed-large` and `nomic-embed-text` are pulled):
+- The models return 1,024 and 768 dimensions, and the default `OllamaEmbedder` is `mxbai-embed-large`.
+- For both models, `embedQuery("bicycle speed")` is closer to `embedDocuments(["The bike went really fast."])` than to `["The soup was cold."]`.
 
 **Real-book tests** (JUnit tag `book`, run only when `RAG_BOOK_PDF` points to a local copy of *Jetpack Compose internals*, Leanpub 2022-11-20). The book is copyrighted, so it's never copied into the repo.
 - Outline → chapters: Front matter, Prelude, and 7 numbered chapters, starting at PDF pages 2, 9, 11, 25, 58, 88, 147, 173, 185. TOC pages 5–8.
@@ -465,7 +470,7 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - With `ollama` too (`RealBookSearchTest`):
   - A sentence copied from the book → `EXACT_PHRASE` on its page (p. 13).
   - 5 questions each have their expected chapter in the top 3.
-  - **Compact vs. full vectors:** the average top-10 overlap between compact search and exact float search at 768 dimensions, over 10 paraphrase questions. Measured (2026-10-14):
+  - **Compact vs. full vectors:** the average top-10 overlap between compact search and exact float search at the model's full size, over 10 paraphrase questions. With the default `mxbai-embed-large`, 512 dims vs. 1,024: **0.89** (test floor 0.85). Measured with `nomic-embed-text` against its 768 dims (2026-10-14):
 
     | Setting | Overlap |
     |---|---|
@@ -475,7 +480,7 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
     | float 512 | 0.85 |
     | binary → int8 512 (**default**) | 0.83 (0.84 after footnote cleanup) |
 
-    The loss comes almost entirely from Matryoshka truncation (client-side, after Ollama's normalization); int8 adds none and the binary pass about 0.03. **Decision:** 512 dimensions, which costs about 0.5 MB more disk and 53 KB more RAM per book than 256. The test floor is 0.80. The original 0.9 target was not met by either dimension. Overlap with float search is a proxy: the evaluation set below measures recall against known answers.
+    The loss comes almost entirely from Matryoshka truncation (client-side, after Ollama's normalization); int8 adds none and the binary pass about 0.03. **Decision:** 512 dimensions, which costs about 0.5 MB more disk and 53 KB more RAM per book than 256. The original 0.9 target is nearly met with mxbai (0.89). Overlap with float search is a proxy: the evaluation set below measures recall against known answers.
 - The DB file for the book is at most **3 MB** (§13).
 - No footnote lines or footnote markers are left (35 URL footnotes; e.g. no `Birch1`).
 
@@ -495,10 +500,25 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - "what does this book cover" → the book summary in the top 3.
 - Time, the number of model calls, and the summary storage size are recorded in §13.
 
-**Fixture book** (a public-domain PDF in `src/test/resources`, e.g. from Project Gutenberg) plus `eval.jsonl` with **20** lines of `{query, expectedPdfPage, expectedChapter}`. At least 8 of the queries must be **paraphrases** that share no content words with the target paragraph. Run with the `ollama` tag:
-- `hybrid` recall@5 (the expected page is within some hit's page range) ≥ **0.85**.
-- `hybrid` recall@5 ≥ `lexical` recall@5. On the paraphrase subset, `hybrid` must beat `lexical`.
-- Searching for a phrase copied word-for-word from the book → the top hit is `EXACT_PHRASE` with the right page.
+**Evaluation set** (`src/test/resources/eval/compose-internals.jsonl`, run by `rag eval` and by `RealBookSearchTest` with tags `book` + `ollama`). This replaces the planned public-domain fixture book: the real book gives realistic questions, and the set holds only questions and page numbers, no book text.
+- 20 questions across all 7 chapters, each with its expected PDF page(s) and chapter. One JSON object per line: `{id, query, expectedPages, expectedChapter, kind}`.
+- `kind` is `keyword` (11) or `paraphrase` (9). A paraphrase shares **no content words** with its answer pages after simple stemming. This is checked mechanically against the pages' text, not judged by eye ("word processors" for the book's "text editors", "screen narrator" for "TalkBack").
+- A question counts as found when one of the top k hits has a paragraph whose pages include an expected page.
+
+Results on 2026-10-14 (512 dims, 200 rescoring candidates, lexical weight 0.5):
+
+| Model | Mode | Recall@5 | MRR | Keyword | Paraphrase | Recall@10 |
+|---|---|---|---|---|---|---|
+| — | lexical | 0.55 | 0.52 | 1.00 | 0.00 | 0.55 |
+| nomic-embed-text | vector | 0.70 | 0.67 | 0.91 | 0.44 | 0.75 |
+| nomic-embed-text | hybrid | 0.75 | 0.57 | 1.00 | 0.44 | 0.75 |
+| **mxbai-embed-large** | vector | 0.80 | 0.70 | 1.00 | 0.56 | 0.80 |
+| **mxbai-embed-large** | **hybrid** | **0.80** | 0.65 | 1.00 | 0.56 | — |
+
+- Full float vectors gave the same recall as compact ones for both models: compression costs nothing measurable here. mxbai at 1,024 dims scored the same as at 512.
+- The 4 paraphrases no setting finds (q09, q10, q14, q16) are the hardest vocabulary gaps. Better embeddings or query expansion are the next levers.
+- **Test floors** (default model): hybrid recall@5 ≥ **0.80**, keyword recall 1.00, hybrid ≥ lexical, and hybrid beats lexical on paraphrases. The original target of 0.85 isn't met; 0.80 is one question short of it.
+- With 20 questions, one question is 0.05. Differences of one question are noise-level; the set should grow before finer tuning.
 
 ## 12. Worked example
 
@@ -516,7 +536,7 @@ It was over in a minute.
 - Paragraph `g1`: "The bike went really fast. Dr. Lee\nwatched from the hill." The stored text keeps the wrapped `\n`; it's flattened to a space only for sentence splitting and the embedding input.
   - Phrase `p0`: "The bike went really fast." → key `<h1>-0p-1c`
   - Phrase `p1`: "Dr. Lee watched from the hill." → key `<h2>-0p-1c`
-  - Embedding input: `"search_document: Chapter 1 · The Ride\nThe bike went really fast. Dr. Lee watched from the hill."`
+  - Embedding input (default model, no document prefix): `"Chapter 1 · The Ride\nThe bike went really fast. Dr. Lee watched from the hill."`
 - Paragraph `g2`: "It was over in a minute." → phrase key `<h3>-0p-1c`, paragraph key `<h4>-0g-1c` (`g2`'s hash is `h4`).
 - `search("how fast was the bike")` → a `HYBRID` hit, found by both BM25 and the vector path: phrase `p0`, paragraph `g1`, chapter `{1, "Chapter 1 · The Ride", 5–7}`.
 - `search("the bicycle's speed")` → there's no word overlap, so BM25 misses. The vector path finds `g1`, so the hit is `VECTOR`. The closest phrase is `p0`, found by embedding the phrases on the fly (§8.3 step 5).
@@ -537,13 +557,89 @@ Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,649 paragr
 | Summaries, Phase 6: binary vectors | **RAM** during search | ~5 KB (estimate) |
 | Summary model (`llama3.2:3b`) | RAM, only during `rag summarize` | ~2 GB |
 
-For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model (Ollama, ~270 MB) is the largest memory cost by far, and it's needed only while indexing and to embed each query.
+For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model is the largest memory cost by far: `mxbai-embed-large` takes ~687 MB in Ollama (`nomic-embed-text` ~370 MB), and it's needed only while indexing and to embed each query. Embedding the whole book takes 32 s with mxbai and 16 s with nomic.
 
 ## 14. Open questions (defaults apply unless changed)
 - Locale for sentence splitting: default `en`, set with `--locale`.
 - Heading lines are kept as separate one-line paragraphs, not merged into the next paragraph. Default: keep. They are still embedded, and the chapter-title prefix duplicates them, which is harmless.
-- Embedding model: default `nomic-embed-text`. Use `bge-m3` or `mxbai-embed-large` for non-English or higher-accuracy needs.
+- Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
+- Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
+- Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
 - Store phrase vectors (instead of computing them at query time) if the cost of finding the closest phrase shows up in profiling. Deferred.
 - Nested sections (1.1) as their own level: deferred to v2.
 - Smaller embedding models for low-RAM machines: `all-minilm` (384 dims, ~45 MB), or static embeddings (model2vec), which need no transformer at query time. Deferred until the evaluation in §11 exists to compare them.
 - Matryoshka dimension: default 512 (decided). Revisit 256 if the §11 evaluation shows recall equal to 512's.
+
+## 15. Portability: desktop and Android (Phase 7, planned)
+
+**Goal.** One code base serves the desktop CLI and an Android library, with the same database format, so an index can be built on either side and searched on either side.
+
+**Non-goals for Phase 7:** iOS; an Android UI (the deliverable is a library plus a small sample); generating summaries on the device (summaries built on desktop are stored in the DB and used as they are).
+
+### 15.1 What is already portable
+Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and location, chapter boundaries, segmentation, unit keys, quantization, fusion and evaluation are pure Kotlin using only JDK APIs that Android also has (`java.text`, `java.security.MessageDigest`, `java.nio`). They move into `core` unchanged. On Android, `android.icu.text.BreakIterator` replaces `java.text.BreakIterator` behind a small `SentenceSplitter` seam.
+
+### 15.2 What becomes pluggable
+
+| Concern | Interface (in `core`) | Desktop | Android |
+|---|---|---|---|
+| PDF access: page text with paragraph breaks, outline items with target pages, TOC lines with x position | `PdfSource` | PDFBox (`org.apache.pdfbox`) | PdfBox-Android (`com.tom_roush.pdfbox`), the same API in another package. PDFBox itself depends on `java.awt`, which Android lacks. |
+| Storage | `Store` (today's `SqliteStore` API) | `androidx.sqlite` with the **bundled** driver | the same code and driver |
+| Embeddings | `Embedder` (exists) | `OllamaEmbedder` (exists), `OnnxEmbedder` | `OnnxEmbedder`; `OllamaEmbedder` can also reach an Ollama server on the local network |
+| Summaries | `Summarizer` (§8.1) | `OllamaSummarizer` | not in Phase 7 |
+
+- **Storage, one implementation for both:** `androidx.sqlite`'s `BundledSQLiteDriver` ships its own SQLite on the JVM and on Android. That gives FTS5 and version ≥ 3.43 (`contentless_delete`) everywhere, including Android versions whose built-in SQLite lacks them. It replaces `sqlite-jdbc`; the SQL and schema stay the same.
+- **On-device embeddings with ONNX Runtime** (`onnxruntime` on the JVM, `onnxruntime-android`):
+  - The model ships as an ONNX file, int8-quantized for phones.
+  - Tokenization is BERT WordPiece, implemented in pure Kotlin from the model's `vocab.txt`, with no native tokenizer library.
+  - Pooling is per model config: CLS for `mxbai-embed-large`, mean for `nomic-embed-text`. Prefixes, truncation and quantization stay as in §5.6.
+  - The ONNX session loads the model memory-mapped, and inference runs in batches off the main thread.
+
+### 15.3 Module layout
+
+```
+core/                 pure Kotlin: pipeline, keys, quantizer, fusion, search, eval, interfaces
+store-sqlite/         Store on androidx.sqlite (bundled driver), JVM + Android
+pdf-pdfbox/           PdfSource on PDFBox (desktop)
+pdf-pdfbox-android/   PdfSource on PdfBox-Android
+embed-ollama/         OllamaEmbedder, OllamaSummarizer
+embed-onnx/           OnnxEmbedder + WordPiece tokenizer (JVM and Android artifacts)
+cli/                  the `rag` command (desktop)
+android/              Android library (AAR): a `RagEngine` facade, plus a sample app
+```
+
+`RagEngine` (Android) exposes `suspend` functions (`index`, `embed`, `search`) and runs blocking work on `Dispatchers.IO`. It reports progress per page and per batch, and checks for cancellation between batches. That fits `WorkManager` for indexing in the background.
+
+### 15.4 Model identity across runtimes
+Vectors are comparable only if they come from the same model weights and the same pooling. Ollama (GGUF) and ONNX builds of one model can differ slightly in numbers.
+- The stored `embed_model` names the model and its variant, e.g. `mxbai-embed-large` or `mxbai-embed-large@onnx-int8`.
+- Two variants count as the **same model**, so an index built with one can be searched with the other, only if a parity test shows average cosine ≥ **0.99** between their vectors for the same texts, and the evaluation set (§11) gives the same recall within one question.
+- Otherwise they're different models, and the existing model check (exit code 5 on the desktop, an exception on Android) prevents mixing them.
+
+### 15.5 Ways to run on a phone (from lightest to heaviest)
+1. **Keyword only:** copy a desktop-built `.db`; no model on the device. In §11 this finds all keyword questions (lexical recall@5 0.55 overall, 1.00 on keyword questions).
+2. **Query embedding only:** copy a desktop-built `.db` and ship the same model (as an ONNX file that passed parity), used only to embed each query. Full hybrid search.
+3. **Full on-device indexing:** PDF → index → embeddings on the phone. This is the heaviest option: minutes per book, in the background.
+
+### 15.6 Choosing the model for phones
+- Candidates: `mxbai-embed-large` (335M parameters, the desktop default), `nomic-embed-text` (137M), `embeddinggemma` (~300M, designed for on-device use, Matryoshka-trained).
+- Each is measured on the evaluation set (§11) and on a reference mid-range phone. Targets: embedding a query in **< 300 ms**, indexing a 200-page book in **< 10 min** in the background, and peak app memory under **400 MB** during indexing.
+- The phone default may differ from the desktop default. An index used on both must use one model (§15.4).
+
+### 15.7 Steps (each ends with passing tests; the desktop CLI keeps working throughout)
+1. Introduce `PdfSource` with the PDFBox adapter. No behavior change: all current tests pass.
+2. Replace `sqlite-jdbc` with `androidx.sqlite` + the bundled driver on desktop. Same schema; all tests pass, including real-book size and recall.
+3. Split the Gradle modules as in §15.3.
+4. Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model.
+5. Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests on an emulator.
+6. Measure the reference-phone numbers from §15.6, record them, and choose the phone model.
+
+### 15.8 Acceptance criteria (Phase 7)
+- After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).
+- **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM and on an Android emulator.
+- **WordPiece tokenizer:** the same token ids as the model's reference tokenizer on 100 sample sentences (fixture file), including code and punctuation.
+- **Parity:** `OnnxEmbedder` vs `OllamaEmbedder` for the default model, average cosine ≥ 0.99 on 50 paragraphs from the generated sample book. Evaluation-set recall within one question.
+- **Same file on both platforms:** a DB built by the desktop CLI and copied into an Android instrumented test opens without migration and returns the same lexical results for the evaluation set. With the parity-checked model, it also returns the same hybrid results within one question.
+- **Indexing on Android:** the generated 12-page sample book (§11) indexes on an emulator with the same chapters, paragraph count and unit keys as on desktop.
+- **Cancellation:** cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it.
+

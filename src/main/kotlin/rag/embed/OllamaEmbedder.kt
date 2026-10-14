@@ -18,7 +18,7 @@ import java.time.Duration
  * network errors and 5xx responses. A 4xx (e.g. model not pulled) fails immediately.
  */
 class OllamaEmbedder(
-    private val config: EmbeddingModel = EmbeddingModel.NOMIC_EMBED_TEXT,
+    private val config: EmbeddingModel = EmbeddingModel.DEFAULT,
     baseUrl: String = DEFAULT_URL,
     private val batchSize: Int = 32,
     private val maxAttempts: Int = 3,

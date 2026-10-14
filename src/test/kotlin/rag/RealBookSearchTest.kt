@@ -6,10 +6,10 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import rag.embed.OllamaEmbedder
-import rag.embed.Quantizer
 import rag.embed.Vectors
 import rag.index.Indexer
 import rag.index.UnitKind
+import rag.search.Evaluation
 import rag.search.MatchType
 import rag.search.Mode
 import rag.search.Searcher
@@ -76,8 +76,8 @@ class RealBookSearchTest {
 
     /**
      * How much the compact vectors (Matryoshka 512 dims, binary first pass, int8 rescoring) agree
-     * with exact float search at 768 dims: average top-10 overlap over paraphrase questions.
-     * Measured 0.83 at 512 dims (0.74 at 256); the floor catches regressions.
+     * with exact float search at the model's full size: average top-10 overlap over paraphrase
+     * questions. The floor catches regressions; see SPEC §11 for the measured values.
      */
     @Test
     fun `compact vectors stay close to full float search`() {
@@ -107,8 +107,32 @@ class RealBookSearchTest {
             compact.count { it in exact } / 10.0
         }.average()
 
-        println("compact-vs-float768 overlap@10 at ${Indexer.DEFAULT_DIM} dims: %.2f".format(overlap))
-        assertTrue(overlap >= 0.80, "overlap@10 = $overlap")
-        assertEquals(Indexer.DEFAULT_DIM, Quantizer.truncate(FloatArray(768), Indexer.DEFAULT_DIM).size)
+        println("${embedder.model}: compact ${Indexer.DEFAULT_DIM} dims vs float ${embedder.dim} overlap@10: %.2f".format(overlap))
+        assertTrue(overlap >= OVERLAP_FLOOR, "overlap@10 = $overlap")
+    }
+
+    /**
+     * The evaluation set (SPEC §11): 20 questions with known answer pages, 9 of them paraphrases
+     * sharing no content words with their answer. Floors are the values measured with the default
+     * model, so a drop fails the build.
+     */
+    @Test
+    fun `evaluation set recall`() {
+        val questions = Evaluation.load(File("src/test/resources/eval/compose-internals.jsonl"))
+        val summaries = Evaluation.summarize(
+            Evaluation.run(Searcher(store, embedder), questions, listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID)), k = 5,
+        ).associateBy { it.mode }
+        summaries.values.forEach { println("${embedder.model} ${it.mode}: recall@5 %.2f MRR %.2f %s".format(it.recall, it.mrr, it.recallByKind)) }
+        val hybrid = summaries.getValue(Mode.HYBRID)
+        val lexical = summaries.getValue(Mode.LEXICAL)
+
+        assertTrue(hybrid.recall >= 0.80, "hybrid recall@5 ${hybrid.recall}")
+        assertEquals(1.0, hybrid.recallByKind.getValue("keyword"))
+        assertTrue(hybrid.recall >= lexical.recall)
+        assertTrue(hybrid.recallByKind.getValue("paraphrase") > lexical.recallByKind.getValue("paraphrase"))
+    }
+
+    private companion object {
+        const val OVERLAP_FLOOR = 0.85 // measured 0.89 with mxbai-embed-large (0.84 nomic)
     }
 }

@@ -23,6 +23,7 @@ import rag.index.EmbedResult
 import rag.index.Indexer
 import rag.index.UnitKind
 import kotlinx.serialization.json.Json
+import rag.search.Evaluation
 import rag.search.Mode
 import rag.search.Searcher
 import rag.store.SqliteStore
@@ -37,7 +38,7 @@ private class Rag : CliktCommand(name = "rag") {
 /** Options shared by commands that talk to Ollama. */
 private abstract class EmbeddingCommand(name: String) : CliktCommand(name = name) {
     val ollamaUrl by option("--ollama-url", help = "Ollama base URL").default(OllamaEmbedder.DEFAULT_URL)
-    val embedModel by option("--embed-model", help = "Ollama embedding model").default(EmbeddingModel.NOMIC_EMBED_TEXT.name)
+    val embedModel by option("--embed-model", help = "Ollama embedding model").default(EmbeddingModel.DEFAULT.name)
     val embedDim by option("--embed-dim", help = "Dimensions kept after Matryoshka truncation (multiple of 64)")
         .int().default(Indexer.DEFAULT_DIM)
 
@@ -119,6 +120,47 @@ private class SearchCommand : CliktCommand(name = "search") {
     private fun pages(start: Int, end: Int) = if (start == end) "$start" else "$start-$end"
 }
 
+private class EvalCommand : CliktCommand(name = "eval") {
+    override fun help(context: Context) = "Measure search quality with an evaluation set (JSON Lines)."
+    val db by option("--db").required()
+    val set by option("--set", help = "Evaluation set, one JSON question per line").file(mustExist = true, canBeDir = false).required()
+    val book by option("--book", help = "Only this book id").long()
+    val k by option("--k", help = "Results considered per question").int().default(5)
+    val mode by option("--mode", help = "all | hybrid | lexical | vector").choice("all", "hybrid", "lexical", "vector").default("all")
+    val details by option("--details", help = "Show the rank of every question").flag()
+    val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
+    val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
+
+    override fun run() = SqliteStore(db).use { store ->
+        val questions = Evaluation.load(set)
+        val scope = if (book != null) listOfNotNull(store.book(book!!)) else store.books()
+        if (scope.isEmpty()) throw UsageError("no books to evaluate")
+        val model = embedModel ?: scope.mapNotNull { it.embedModel }.distinct().singleOrNull()
+        val embedder = model?.let { OllamaEmbedder(EmbeddingModel.forName(it), ollamaUrl) }
+        val modes = if (mode == "all") listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID) else listOf(Mode.valueOf(mode.uppercase()))
+        val results = Evaluation.run(Searcher(store, embedder), questions, modes, k, book)
+        val kinds = questions.groupingBy { it.kind }.eachCount().toSortedMap()
+
+        echo("${questions.size} questions (${kinds.entries.joinToString { "${it.value} ${it.key}" }}), top $k")
+        echo("%-8s %9s %6s %10s  %s".format("mode", "recall@$k", "MRR", "chapter@$k", "recall by kind"))
+        Evaluation.summarize(results, k).forEach { s ->
+            val byKind = s.recallByKind.entries.joinToString("  ") { "%s %.2f".format(it.key, it.value) }
+            echo("%-8s %9.2f %6.2f %10.2f  %s".format(s.mode.name.lowercase(), s.recall, s.mrr, s.chapterRecall, byKind))
+        }
+        if (details) {
+            echo("")
+            echo("%-5s %-10s %s  query".format("id", "kind", modes.joinToString(" ") { "%-7s".format(it.name.lowercase()) }))
+            questions.forEach { q ->
+                val ranks = modes.joinToString(" ") { m ->
+                    val r = results.first { it.question == q && it.mode == m }
+                    "%-7s".format(r.pageRank?.let { "#$it" } ?: "-")
+                }
+                echo("%-5s %-10s %s  %s  (p. %s)".format(q.id, q.kind, ranks, q.query, q.expectedPages.joinToString(",")))
+            }
+        }
+    }
+}
+
 private class BooksCommand : CliktCommand(name = "books") {
     override fun help(context: Context) = "List indexed books."
     val db by option("--db").required()
@@ -158,7 +200,7 @@ private class DumpCommand : CliktCommand(name = "dump") {
 }
 
 fun main(args: Array<String>) {
-    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), BooksCommand(), DumpCommand())
+    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), BooksCommand(), DumpCommand())
     val exitCode = try {
         command.parse(args)
         0

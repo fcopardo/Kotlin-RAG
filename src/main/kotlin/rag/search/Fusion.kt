@@ -4,13 +4,14 @@ package rag.search
 object Fusion {
 
     /**
-     * Fuses ranked lists: each item scores `Σ 1 / (k + rank)` over the lists it's in (rank from 1).
-     * Ties keep first-seen order.
+     * Fuses ranked lists: each item scores `Σ weight / (k + rank)` over the lists it's in (rank
+     * from 1). [weights] defaults to 1 per list. Ties keep first-seen order.
      */
-    fun <T> rrf(lists: List<List<T>>, k: Int = 60): List<Pair<T, Double>> {
+    fun <T> rrf(lists: List<List<T>>, k: Int = 60, weights: List<Double> = List(lists.size) { 1.0 }): List<Pair<T, Double>> {
+        require(weights.size == lists.size) { "one weight per list" }
         val scores = LinkedHashMap<T, Double>()
-        lists.forEach { list ->
-            list.forEachIndexed { i, item -> scores[item] = (scores[item] ?: 0.0) + 1.0 / (k + i + 1) }
+        lists.forEachIndexed { l, list ->
+            list.forEachIndexed { i, item -> scores[item] = (scores[item] ?: 0.0) + weights[l] / (k + i + 1) }
         }
         return scores.entries.sortedByDescending { it.value }.map { it.key to it.value }
     }

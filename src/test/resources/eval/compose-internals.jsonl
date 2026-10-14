@@ -1,0 +1,20 @@
+{"id": "q01", "query": "why does the engine hold on to a pointer for each widget routine so it may rerun it", "expectedPages": [16, 17], "expectedChapter": "1. Composable functions", "kind": "paraphrase"}
+{"id": "q02", "query": "positional memoization", "expectedPages": [17, 18], "expectedChapter": "1. Composable functions", "kind": "keyword"}
+{"id": "q03", "query": "function coloring and the What color is your function post", "expectedPages": [21, 22], "expectedChapter": "1. Composable functions", "kind": "keyword"}
+{"id": "q04", "query": "what properties must a stable type fulfill", "expectedPages": [41], "expectedChapter": "2. The Compose compiler", "kind": "keyword"}
+{"id": "q05", "query": "how does the toolchain decide on its own whether a user-defined record is trustworthy", "expectedPages": [41, 42], "expectedChapter": "2. The Compose compiler", "kind": "paraphrase"}
+{"id": "q06", "query": "enabling live literals", "expectedPages": [44, 45], "expectedChapter": "2. The Compose compiler", "kind": "keyword"}
+{"id": "q07", "query": "$changed bitmask for static parameters known at compile time", "expectedPages": [50, 51], "expectedChapter": "2. The Compose compiler", "kind": "keyword"}
+{"id": "q08", "query": "difference between the slot table and the list of changes", "expectedPages": [59], "expectedChapter": "3. The Compose runtime", "kind": "keyword"}
+{"id": "q09", "query": "which technique borrowed from word processors shapes the storage of executed UI invocations", "expectedPages": [59], "expectedChapter": "3. The Compose runtime", "kind": "paraphrase"}
+{"id": "q10", "query": "how do inner hierarchies hook into the enclosing one so ambient settings still reach them", "expectedPages": [69], "expectedChapter": "3. The Compose runtime", "kind": "paraphrase"}
+{"id": "q11", "query": "should a hierarchy be assembled beginning at the leaves or at the apex, speed-wise", "expectedPages": [71, 72], "expectedChapter": "3. The Compose runtime", "kind": "paraphrase"}
+{"id": "q12", "query": "recompose concurrently with a CoroutineContext provided from the outside", "expectedPages": [86], "expectedChapter": "3. The Compose runtime", "kind": "keyword"}
+{"id": "q13", "query": "Applier implementations provided by Compose UI and AbstractApplier", "expectedPages": [96, 97], "expectedChapter": "4. Compose UI", "kind": "keyword"}
+{"id": "q14", "query": "how to guess how large an element would be with no limits, so each item in a row equals the biggest one", "expectedPages": [115, 116], "expectedChapter": "4. Compose UI", "kind": "paraphrase"}
+{"id": "q15", "query": "Constraints modeled as an inline class with a single Long and bitmasks", "expectedPages": [120], "expectedChapter": "4. Compose UI", "kind": "keyword"}
+{"id": "q16", "query": "how does a screen narrator avoid announcing every tiny piece of an entry one by one", "expectedPages": [145, 146], "expectedChapter": "4. Compose UI", "kind": "paraphrase"}
+{"id": "q17", "query": "multiversion concurrency control and isolation", "expectedPages": [150], "expectedChapter": "5. State snapshot system", "kind": "keyword"}
+{"id": "q18", "query": "what happens when parallel writers clash on one observable thing", "expectedPages": [170], "expectedChapter": "5. State snapshot system", "kind": "paraphrase"}
+{"id": "q19", "query": "rememberCoroutineScope cancelled when leaving the composition", "expectedPages": [180], "expectedChapter": "6. Effects and effect handlers", "kind": "keyword"}
+{"id": "q20", "query": "manipulating a site's page layout from a JavaScript target", "expectedPages": [197, 198], "expectedChapter": "7. Advanced Compose Runtime use cases", "kind": "paraphrase"}
