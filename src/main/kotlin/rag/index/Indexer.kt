@@ -2,6 +2,7 @@ package rag.index
 
 import org.apache.pdfbox.util.Version
 import rag.BookReader
+import rag.ReadOptions
 import rag.embed.Embedder
 import rag.embed.Quantizer
 import rag.store.SqliteStore
@@ -24,22 +25,23 @@ class Indexer(
     private val batchSize: Int = 32,
 ) {
     /**
-     * Indexes [pdf] unless the same file is already there (by SHA-256) and [reindex] is false.
+     * Indexes [file] (PDF or EPUB) unless the same file is already there (by SHA-256) and [reindex] is false.
      * With an [embedder], it's checked before anything is committed, then paragraphs are embedded.
      */
     fun index(
-        pdf: File,
+        file: File,
         tocPages: Set<Int>? = null,
         reindex: Boolean = false,
         embedder: Embedder? = null,
         embedDim: Int = DEFAULT_DIM,
+        locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
     ): IndexResult {
-        val sha = sha256(pdf)
+        val sha = sha256(file)
         val existing = store.findBookBySha(sha)
         if (existing != null && !reindex) return IndexResult(existing, skipped = true, embedded = null)
 
         embedder?.checkAvailable()
-        val structured = reader.read(pdf, tocPages)
+        val structured = reader.read(file, options = ReadOptions(tocPages = tocPages, locationSize = locationSize))
         val bookId = store.insertBook(structured, sha, EXTRACTOR, replacing = existing)
         val embedded = embedder?.let { embed(bookId, it, embedDim) }
         return IndexResult(bookId, skipped = false, embedded = embedded)

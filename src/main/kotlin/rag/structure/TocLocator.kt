@@ -1,7 +1,10 @@
 package rag.structure
 
-/** Where a chapter starts: its title and 1-based PDF page. */
-data class ChapterStart(val title: String, val pdfPage: Int)
+/**
+ * Where a chapter starts: its title and 1-based page. [charOffset] is the exact start in the book
+ * text when the source knows it (EPUB); PDFs find it by the title line on [pdfPage].
+ */
+data class ChapterStart(val title: String, val pdfPage: Int, val charOffset: Int? = null)
 
 /** Result of mapping TOC printed pages to PDF pages. */
 data class LocatedToc(val starts: List<ChapterStart>, val pageOffset: Int, val warnings: List<String>)

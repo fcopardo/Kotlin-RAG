@@ -18,6 +18,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("com.github.ajalt.clikt:clikt:5.1.0")
+    implementation("org.jsoup:jsoup:1.23.2")
 
     testImplementation(kotlin("test"))
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
@@ -50,4 +51,6 @@ tasks.test {
     inputs.property("ragOllama", providers.environmentVariable("RAG_OLLAMA").orElse(""))
     inputs.property("ragOllamaUrl", providers.environmentVariable("RAG_OLLAMA_URL").orElse(""))
     inputs.property("ragBookPdf", providers.environmentVariable("RAG_BOOK_PDF").orElse(""))
+    inputs.property("ragKotlinPdf", providers.environmentVariable("RAG_KOTLIN_PDF").orElse(""))
+    inputs.property("ragCtciPdf", providers.environmentVariable("RAG_CTCI_PDF").orElse(""))
 }

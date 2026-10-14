@@ -27,9 +27,17 @@ object Chapters {
             val page = start.pdfPage.coerceIn(1, book.pageCount)
             val from = book.pageStarts[page - 1]
             val until = if (page < book.pageCount) book.pageStarts[page] else text.length
-            val offset = TitleMatcher.findLine(text, start.title, from, until) ?: from
+            // EPUB knows the exact offset; a PDF chapter ("Part › Chapter") is found by its own heading.
+            val offset = start.charOffset?.coerceIn(0, text.length)
+                ?: TitleMatcher.findLine(text, OutlineChapters.ownTitle(start.title), from, until) ?: from
             val previous = offsets.lastOrNull()?.second ?: -1
-            if (offset in (previous + 1) until text.length) offsets += start.title to offset
+            when {
+                offset >= text.length -> Unit
+                offset > previous -> offsets += start.title to offset
+                // Same position (e.g. a part whose intro page has no text, then its first chapter):
+                // the later, more specific start wins.
+                offset == previous -> offsets[offsets.size - 1] = start.title to offset
+            }
         }
         if (offsets.isEmpty()) offsets += "Book" to 0
 

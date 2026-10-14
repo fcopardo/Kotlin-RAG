@@ -36,6 +36,13 @@ class TocParserTest {
     }
 
     @Test
+    fun `OCR bullets in leaders still parse, and leaders without a number still look like a TOC`() {
+        assertEquals(listOf(TocEntry("Chapter 16 j Moderate", 181)), TocParser.parse(lines("Chapter 16 j Moderate .........·.......•....181")))
+        assertEquals(true, TocParser.looksLikeToc("Additional Review Problems . . • . . . . . .\nChapter 17 j Hard ........ 186\nMore . . . . . . ."))
+        assertEquals(false, TocParser.looksLikeToc("Plain prose line.\nAnother line.\nWait... what?"))
+    }
+
+    @Test
     fun `ignores lines that are not entries`() {
         assertEquals(emptyList(), TocParser.parse(lines("CONTENTS", "Some running text without a page")))
     }

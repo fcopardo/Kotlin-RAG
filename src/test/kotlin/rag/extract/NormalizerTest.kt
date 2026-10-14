@@ -20,6 +20,12 @@ class NormalizerTest {
     }
 
     @Test
+    fun `soft hyphens are removed and rejoin words at line ends`() {
+        assertEquals("implement this", Normalizer.normalize("imple\u00AD\nment this"))
+        assertEquals("permutation", Normalizer.normalize("permu\u00ADtation"))
+    }
+
+    @Test
     fun `expands ligatures with NFKC`() {
         assertEquals("first offer", Normalizer.normalize("ﬁrst oﬀer"))
     }

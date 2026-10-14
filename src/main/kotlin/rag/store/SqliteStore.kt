@@ -21,6 +21,10 @@ data class BookRow(
     val embedDim: Int?,
     val embedStatus: String,
     val createdAt: String,
+    /** "pdf" or "epub". */
+    val format: String = "pdf",
+    /** "pdf", "print" or "location" (SPEC §16.5). */
+    val pageKind: String = "pdf",
 )
 
 data class StoredUnit(
@@ -63,12 +67,37 @@ class SqliteStore(path: String) : AutoCloseable {
             s.execute("PRAGMA foreign_keys = ON")
             s.execute("PRAGMA journal_mode = WAL")
             SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach(s::execute)
-            // SPEC §7: phases 1-5 are schema version 1; Phase 6 migrates to 2.
-            if (s.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } == 0) s.execute("PRAGMA user_version = $SCHEMA_VERSION")
+            migrate()
+            // SPEC §7: phases 1-5 are schema version 1; EPUB support (Phase 8) is version 2.
+            s.execute("PRAGMA user_version = $SCHEMA_VERSION")
         }
     }
 
     override fun close() = connection.close()
+
+    /**
+     * Version 1 → 2 (EPUB, SPEC §16.5): book format and page kind, page labels, `pdf_page` → `page_no`.
+     * Detected by columns, since databases from before `user_version` was set report version 0.
+     */
+    private fun migrate() {
+        val pageColumns = columns("page")
+        if ("pdf_page" in pageColumns) {
+            update("ALTER TABLE page RENAME COLUMN pdf_page TO page_no")
+        }
+        if ("label" !in pageColumns) {
+            update("ALTER TABLE page ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+            update("UPDATE page SET label = CAST(page_no AS TEXT)")
+        }
+        val bookColumns = columns("book")
+        if ("format" !in bookColumns) update("ALTER TABLE book ADD COLUMN format TEXT NOT NULL DEFAULT 'pdf'")
+        if ("page_kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'pdf'")
+    }
+
+    private fun columns(table: String): Set<String> = query("PRAGMA table_info($table)") { it.getString("name") }.toSet()
+
+    /** Display labels of a book's pages, in page order ("13", "xii", "loc 4"). */
+    fun pageLabels(bookId: Long): List<String> =
+        query("SELECT label FROM page WHERE book_id = ? ORDER BY page_no", bookId) { it.getString(1) }
 
     fun <T> transaction(block: () -> T): T {
         val wasAuto = connection.autoCommit
@@ -100,12 +129,13 @@ class SqliteStore(path: String) : AutoCloseable {
     fun insertBook(structured: StructuredBook, fileSha256: String, extractor: String, replacing: Long? = null): Long = transaction {
         replacing?.let(::deleteBookRows)
         val bookId = insert(
-            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, created_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, format, page_kind, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             fileSha256, structured.title, structured.book.text, extractor,
-            structured.plan.strategy.name.lowercase(), structured.plan.pageOffset, Instant.now().toString(),
+            structured.plan.strategy.name.lowercase(), structured.plan.pageOffset,
+            structured.format.name.lowercase(), structured.pageKind.name.lowercase(), Instant.now().toString(),
         )
-        batch("INSERT INTO page(book_id, pdf_page, char_start) VALUES (?,?,?)",
-            structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start) })
+        batch("INSERT INTO page(book_id, page_no, char_start, label) VALUES (?,?,?,?)",
+            structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
         insertUnits(bookId, structured)
         bookId
     }
@@ -287,6 +317,7 @@ class SqliteStore(path: String) : AutoCloseable {
         rs.getLong("id"), rs.getString("file_sha256"), rs.getString("title"), rs.getString("chapter_strategy"),
         rs.getObject("page_offset")?.let { (it as Number).toInt() }, rs.getString("embed_model"),
         rs.getObject("embed_dim")?.let { (it as Number).toInt() }, rs.getString("embed_status"), rs.getString("created_at"),
+        rs.getString("format"), rs.getString("page_kind"),
     )
 
     private fun storedUnit(rs: ResultSet) = StoredUnit(
@@ -297,7 +328,7 @@ class SqliteStore(path: String) : AutoCloseable {
     )
 
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         /** Unit hashes are 16 hex chars (64 bits); stored as INTEGER, half the size of the text. */
         fun hashToLong(hash: String): Long = java.lang.Long.parseUnsignedLong(hash, 16)
@@ -317,13 +348,16 @@ class SqliteStore(path: String) : AutoCloseable {
               embed_model TEXT,
               embed_dim INTEGER,
               embed_status TEXT NOT NULL DEFAULT 'none' CHECK (embed_status IN ('none','partial','complete')),
-              created_at TEXT NOT NULL
+              created_at TEXT NOT NULL,
+              format TEXT NOT NULL DEFAULT 'pdf',
+              page_kind TEXT NOT NULL DEFAULT 'pdf' 
             );
             CREATE TABLE IF NOT EXISTS page (
               book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
-              pdf_page INTEGER NOT NULL,
+              page_no INTEGER NOT NULL,
               char_start INTEGER NOT NULL,
-              PRIMARY KEY (book_id, pdf_page)
+              label TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (book_id, page_no)
             );
             CREATE TABLE IF NOT EXISTS unit (
               id INTEGER PRIMARY KEY,

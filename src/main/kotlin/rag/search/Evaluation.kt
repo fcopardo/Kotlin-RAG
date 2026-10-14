@@ -2,6 +2,7 @@ package rag.search
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import rag.extract.Normalizer
 import java.io.File
 
 /** One evaluation question (SPEC §11): a query and where its answer is in the book. */
@@ -9,10 +10,17 @@ import java.io.File
 data class EvalQuestion(
     val id: String,
     val query: String,
-    val expectedPages: List<Int>,
-    val expectedChapter: String,
+    /** Page ordinals of the answer (PDF pages); may be empty when [expectedAnchor] is given. */
+    val expectedPages: List<Int> = emptyList(),
+    /** Optional: the answer's chapter title, for chapter recall. */
+    val expectedChapter: String = "",
     /** `keyword` shares words with the answer; `paraphrase` shares no content words with it. */
-    val kind: String,
+    val kind: String = "keyword",
+    /**
+     * A short phrase (at most 8 words) from the answer passage. Format-independent (SPEC §16.7): a
+     * hit counts when its paragraph contains it, ignoring case and spacing.
+     */
+    val expectedAnchor: String? = null,
 )
 
 /** Where the answer showed up for one question in one mode. Ranks are 1-based; null if not in the top k. */
@@ -47,14 +55,23 @@ object Evaluation {
         .map { it.trim() }
         .filter { it.isNotEmpty() && !it.startsWith("//") }
         .map { json.decodeFromString<EvalQuestion>(it) }
+        .onEach { q -> require(q.expectedPages.isNotEmpty() || !q.expectedAnchor.isNullOrBlank()) { "${q.id}: needs expectedPages or expectedAnchor" } }
 
-    /** 1-based rank of the first hit whose paragraph pages include an expected page. */
+    /** Whether a hit answers the question: its paragraph is on an expected page, or contains the anchor. */
+    fun answers(hit: Hit, question: EvalQuestion): Boolean {
+        val onPage = question.expectedPages.any { it in hit.paragraph.pageStart..hit.paragraph.pageEnd }
+        val anchor = question.expectedAnchor?.let(Normalizer::hashNormalize)?.takeIf { it.isNotEmpty() }
+        return onPage || (anchor != null && anchor in Normalizer.hashNormalize(hit.paragraph.text))
+    }
+
+    /** 1-based rank of the first hit that answers the question. */
     fun pageRank(hits: List<Hit>, question: EvalQuestion): Int? =
-        hits.indexOfFirst { h -> question.expectedPages.any { it in h.paragraph.pageStart..h.paragraph.pageEnd } }
-            .takeIf { it >= 0 }?.plus(1)
+        hits.indexOfFirst { answers(it, question) }.takeIf { it >= 0 }?.plus(1)
 
+    /** Null when the question names no chapter, or the chapter isn't in the hits. */
     fun chapterRank(hits: List<Hit>, question: EvalQuestion): Int? =
-        hits.indexOfFirst { it.chapter.title == question.expectedChapter }.takeIf { it >= 0 }?.plus(1)
+        if (question.expectedChapter.isBlank()) null
+        else hits.indexOfFirst { it.chapter.title == question.expectedChapter }.takeIf { it >= 0 }?.plus(1)
 
     fun run(searcher: Searcher, questions: List<EvalQuestion>, modes: List<Mode>, k: Int = 5, bookId: Long? = null): List<QuestionResult> =
         modes.flatMap { mode ->
@@ -71,7 +88,8 @@ object Evaluation {
                 k = k,
                 recall = rs.count { it.pageRank != null }.toDouble() / rs.size,
                 mrr = rs.sumOf { r -> r.pageRank?.let { 1.0 / it } ?: 0.0 } / rs.size,
-                chapterRecall = rs.count { it.chapterRank != null }.toDouble() / rs.size,
+                chapterRecall = rs.filter { it.question.expectedChapter.isNotBlank() }
+                    .let { c -> if (c.isEmpty()) 0.0 else c.count { it.chapterRank != null }.toDouble() / c.size },
                 recallByKind = rs.groupBy { it.question.kind }
                     .mapValues { (_, g) -> g.count { it.pageRank != null }.toDouble() / g.size }
                     .toSortedMap(),

@@ -81,6 +81,26 @@ class IndexerTest {
     }
 
     @Test
+    fun `an EPUB indexes and searches next to a PDF, with location labels`() {
+        indexer().index(pdf, embedder = FakeEmbedder())
+        val epub = rag.epub.TestEpubs.build(File(dir, "soup.epub"), listOf(
+            rag.epub.TestEpubs.Doc("ch1.xhtml", "<h1>Soup</h1><p>The soup was cold when it arrived. Nobody complained about the temperature.</p>"),
+            rag.epub.TestEpubs.Doc("ch2.xhtml", "<h1>Bread</h1><p>Bread was served warm with butter.</p>"),
+        ), listOf(rag.epub.TestEpubs.Toc("Soup", "ch1.xhtml"), rag.epub.TestEpubs.Toc("Bread", "ch2.xhtml")))
+
+        val epubId = indexer().index(epub, embedder = FakeEmbedder(), locationSize = 40).bookId
+
+        val row = store.book(epubId)!!
+        assertEquals(Triple("epub", "location", "nav"), Triple(row.format, row.pageKind, row.chapterStrategy))
+        assertTrue(store.pageLabels(epubId).all { it.startsWith("loc ") })
+        val hit = rag.search.Searcher(store, FakeEmbedder()).search("Nobody complained about the temperature.").first()
+        assertEquals(epubId, hit.bookId)
+        assertEquals("location", hit.pageKind)
+        assertTrue(hit.phrase.pageStartLabel.startsWith("loc "))
+        assertEquals(2, store.books().size)
+    }
+
+    @Test
     fun `indexing the same file again inserts nothing`() {
         val first = indexer().index(pdf)
         val units = store.count("unit")

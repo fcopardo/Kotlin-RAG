@@ -16,11 +16,27 @@ enum class Mode { HYBRID, LEXICAL, VECTOR }
 
 enum class MatchType { EXACT_BOOK, EXACT_CHAPTER, EXACT_PARAGRAPH, EXACT_PHRASE, LEXICAL, VECTOR, HYBRID, SUMMARY }
 
+/** Pages are ordinals into the book's pages; labels are what to cite ("13", "xii", "loc 4"). */
 @Serializable
-data class UnitRef(val unitKey: String, val text: String, val pageStart: Int, val pageEnd: Int)
+data class UnitRef(
+    val unitKey: String,
+    val text: String,
+    val pageStart: Int,
+    val pageEnd: Int,
+    val pageStartLabel: String,
+    val pageEndLabel: String,
+)
 
 @Serializable
-data class ChapterRef(val number: Int, val title: String, val pageStart: Int, val pageEnd: Int, val unitKey: String)
+data class ChapterRef(
+    val number: Int,
+    val title: String,
+    val pageStart: Int,
+    val pageEnd: Int,
+    val unitKey: String,
+    val pageStartLabel: String,
+    val pageEndLabel: String,
+)
 
 /** One search result (SPEC §8.2). The JSON form is the contract for LLM tools. */
 @Serializable
@@ -32,6 +48,8 @@ data class Hit(
     val chapter: ChapterRef,
     val bookId: Long,
     val bookTitle: String?,
+    /** "pdf", "print" or "location": how to read the page labels (SPEC §16.5). */
+    val pageKind: String,
     val summary: String? = null,
 )
 
@@ -52,6 +70,7 @@ class Searcher(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
     }
     private val binaryIndexes = HashMap<Long, BinaryIndex>()
+    private val pageLabels = HashMap<Long, List<String>>()
 
     private class BinaryIndex(val unitIds: LongArray, val bits: Array<LongArray>)
 
@@ -180,7 +199,7 @@ class Searcher(
         val chapter = store.unit(paragraph.parentId!!)!!
         val book = store.book(paragraph.bookId)!!
         val closest = phrase ?: closestPhrase(paragraph, context)
-        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title)
+        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title, book.pageKind)
     }
 
     /** Best BM25 phrase in the paragraph; else the phrase most similar to the query; else the first. */
@@ -205,9 +224,15 @@ class Searcher(
         return phrases.first()
     }
 
-    private fun ref(u: StoredUnit) = UnitRef(u.key, text(u.bookId).substring(u.start, u.end + 1), u.pageStart, u.pageEnd)
+    private fun ref(u: StoredUnit) = UnitRef(
+        u.key, text(u.bookId).substring(u.start, u.end + 1), u.pageStart, u.pageEnd, label(u.bookId, u.pageStart), label(u.bookId, u.pageEnd),
+    )
 
-    private fun chapterRef(c: StoredUnit) = ChapterRef(c.ordinal, c.title ?: "", c.pageStart, c.pageEnd, c.key)
+    private fun chapterRef(c: StoredUnit) =
+        ChapterRef(c.ordinal, c.title ?: "", c.pageStart, c.pageEnd, c.key, label(c.bookId, c.pageStart), label(c.bookId, c.pageEnd))
+
+    private fun label(bookId: Long, page: Int): String =
+        pageLabels.getOrPut(bookId) { store.pageLabels(bookId) }.getOrNull(page - 1) ?: page.toString()
 
     private fun text(bookId: Long): String = texts.getOrPut(bookId) { store.bookText(bookId) }
 

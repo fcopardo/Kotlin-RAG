@@ -226,6 +226,7 @@ environment variables:
 |---|---|
 | `RAG_OLLAMA=1` | Tests against a real local Ollama (`mxbai-embed-large` and `nomic-embed-text` must be pulled). `RAG_OLLAMA_URL` overrides the server URL. |
 | `RAG_BOOK_PDF=/path/to/book.pdf` | Tests against *Jetpack Compose internals* (Jorge Castillo, Leanpub, 2022-11-20). The book is copyrighted and isn't part of this repository; use your own copy. |
+| `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
 
 ```bash
 RAG_OLLAMA=1 RAG_BOOK_PDF=~/Downloads/composeinternals.pdf ./gradlew test
@@ -255,3 +256,6 @@ src/main/kotlin/rag/
   questions like "what is chapter 5 about?" can be answered. Design in SPEC.md §5.7.
 - **Planned (Phase 7):** desktop and Android from one code base, sharing the same index file,
   with on-device embeddings through ONNX Runtime. Design in SPEC.md §15.
+- **Planned (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
+  table of contents and citations by printed page where the EPUB has a page list. Design in
+  SPEC.md §16.

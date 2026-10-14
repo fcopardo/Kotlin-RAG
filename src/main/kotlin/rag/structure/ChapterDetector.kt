@@ -1,8 +1,10 @@
 package rag.structure
 
 import org.apache.pdfbox.pdmodel.PDDocument
+import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 
-enum class ChapterStrategy { OUTLINE, TOC, FALLBACK }
+/** How chapters were found: PDF outline or TOC pages; EPUB 3 nav, EPUB 2 NCX or headings; or one chapter. */
+enum class ChapterStrategy { OUTLINE, TOC, NAV, NCX, HEADINGS, FALLBACK }
 
 /**
  * Where chapters start, before the book text is assembled.
@@ -19,8 +21,6 @@ data class ChapterPlan(
 /** Picks chapter starts: PDF outline, then TOC pages, then the whole book (SPEC §5.3). */
 class ChapterDetector(private val locator: TocLocator = TocLocator()) {
 
-    private val contentsTitle = Regex("^(table of )?contents$", RegexOption.IGNORE_CASE)
-
     /**
      * @param rawPages page texts before cleanup, `rawPages[i]` is PDF page `i + 1`.
      * @param tocPages PDF pages the user says hold the TOC, if any.
@@ -32,12 +32,12 @@ class ChapterDetector(private val locator: TocLocator = TocLocator()) {
 
     fun fromOutline(document: PDDocument, rawPages: List<String>, tocPages: Set<Int>? = null): ChapterPlan? {
         val outline = document.documentCatalog.documentOutline ?: return null
-        val items = outline.children().mapNotNull { item ->
-            val page = item.findDestinationPage(document)?.let { document.pages.indexOf(it) + 1 } ?: return@mapNotNull null
-            if (page < 1) null else ChapterStart(item.title.orEmpty().trim(), page)
-        }.sortedBy { it.pdfPage }
-
-        val (contents, chapters) = items.partition { contentsTitle.matches(it.title) }
+        fun pageOf(item: PDOutlineItem) = item.findDestinationPage(document)?.let { document.pages.indexOf(it) + 1 }?.takeIf { it >= 1 }
+        // Two levels are enough: top-level entries and, for parts, their children.
+        val entries = outline.children().map { item ->
+            OutlineEntry(item.title.orEmpty(), pageOf(item), item.children().map { OutlineEntry(it.title.orEmpty(), pageOf(it)) })
+        }
+        val (chapters, contents) = OutlineChapters.flatten(entries)
         if (chapters.size < 2) return null
 
         // The outline's TOC entry starts the TOC; it continues while pages still look like a TOC,

@@ -72,4 +72,54 @@ class BoilerplateRemoverTest {
 
         assert(cleaned.take(3).all { it.startsWith("Same top") })
     }
+
+    @Test
+    fun `footers differing only in OCR noise are one footer`() {
+        val seps = listOf("I", "\\", "J", "/", "j", "I")
+        val words = listOf("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+        val pages = words.mapIndexed { i, w -> "Body $w.\nMore $w.\nCrackingTheCodingInterview.com ${seps[i]} 6th Edition ${190 + i}" }
+
+        remover.remove(pages).forEachIndexed { i, page -> assertEquals("Body ${words[i]}.\nMore ${words[i]}.", page) }
+    }
+
+    @Test
+    fun `a closing brace at page edges is never boilerplate`() {
+        val words = listOf("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+        val pages = words.map { "fun $it() {\nreturn $it\n}" }
+
+        assertEquals(pages, remover.remove(pages))
+    }
+
+    @Test
+    fun `running chapter headers repeated within a chapter are removed`() {
+        val words = listOf("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf")
+        // Chapter "1. Solutions to Arrays and Strings" starts on page 1; its header has other words.
+        val pages = words.mapIndexed { i, w ->
+            if (i == 0) "1. Solutions to Arrays and Strings\nOpening $w." else "Solutions to Chapter 1 | Arrays and Strings\nText $w.\nMore $w."
+        }
+
+        val cleaned = remover.removeRunningTitles(pages, listOf("1. Solutions to Arrays and Strings" to 1))
+
+        assertEquals(pages[0], cleaned[0])
+        cleaned.drop(1).forEachIndexed { i, page -> assertEquals("Text ${words[i + 1]}.\nMore ${words[i + 1]}.", page) }
+    }
+
+    @Test
+    fun `a running title keeps matching when the chapter number starts the line`() {
+        val pages = listOf("5 Writing your first class\nIntro.", "Body text.\n5 Writing your first class 26")
+
+        assertEquals(listOf(pages[0], "Body text."), remover.removeRunningTitles(pages, listOf("5 Writing your first class" to 1)))
+    }
+
+    @Test
+    fun `a chapter heading survives when its running headers are book-wide boilerplate`() {
+        // The chapter spans most of the book, so its header is on > 30% of pages.
+        val words = listOf("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+        val pages = listOf("1. Big Chapter\nOpening.") + words.map { "1. Big Chapter 7\nText $it.\nMore $it." }
+
+        val cleaned = remover.remove(pages, chapterStarts = listOf("1. Big Chapter" to 1))
+
+        assertEquals("1. Big Chapter\nOpening.", cleaned[0])
+        assertEquals("Text alpha.\nMore alpha.", cleaned[1])
+    }
 }

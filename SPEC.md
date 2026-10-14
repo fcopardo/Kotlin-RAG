@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-A Kotlin/JVM command-line tool, a **digestor**, that reads a PDF book and splits its text into a hierarchy: **phrases → paragraphs → chapters → book**. It stores that hierarchy in a local database, with an **embedding** for each paragraph, and gives an LLM a search function. Search combines exact, keyword (BM25) and meaning-based (vector) matching. Each result returns the matching phrase, its full paragraph and its chapter's data, with page numbers for citation.
+A Kotlin/JVM command-line tool, a **digestor**, that reads a book (**PDF**, or **EPUB** from Phase 8, §16) and splits its text into a hierarchy: **phrases → paragraphs → chapters → book**. It stores that hierarchy in a local database, with an **embedding** for each paragraph, and gives an LLM a search function. Search combines exact, keyword (BM25) and meaning-based (vector) matching. Each result returns the matching phrase, its full paragraph and its chapter's data, with page numbers for citation.
 
 **Design goal: low memory.** The index should stay small on disk and in RAM, so many books fit on modest hardware. Each piece of text is stored once, and everything else points at it by offset. The full-text index doesn't store text. Vectors are truncated and quantized, and search keeps only compact binary vectors in RAM. §13 gives the budget.
 
@@ -18,6 +18,7 @@ A Kotlin/JVM command-line tool, a **digestor**, that reads a PDF book and splits
 ### Non-goals (v1)
 - Scanned or image-only PDFs. There is no OCR. Fail with a clear error if a page range has no text layer.
 - PDFs that need a user password to open. Fail with a clear error. PDFs encrypted with only an owner password (permission restrictions, common in published books) open without one and are accepted.
+- DRM-protected EPUBs (Adobe ADEPT, Apple FairPlay, …) and fixed-layout EPUBs. Detect them and fail with a clear error (§16.2). DRM is never removed or worked around.
 - Multi-column layout reconstruction beyond what PDFBox gives by default.
 - A remote or server database, and remote embedding APIs. Everything runs locally.
 - An approximate-nearest-neighbour (ANN) vector index. Brute-force similarity is enough at single-book scale (§8.3).
@@ -43,6 +44,7 @@ The original spec used "index" for two different things. Use these terms instead
 
 - Kotlin 2.x, JVM 21, Gradle with the Kotlin DSL.
 - Apache PDFBox **3.0.x**, for text extraction and the outline.
+- `jsoup`, for EPUB's XHTML (Phase 8). It tolerates imperfect markup and runs on Android too. Zip reading uses `java.util.zip` from the JDK.
 - `org.xerial:sqlite-jdbc` **3.43 or later**. It bundles FTS5, and 3.43 is the first version with `contentless_delete`.
 - **Ollama** running locally (default `http://localhost:11434`). It serves the embedding model (§8.1) and, optionally, the summary model (§5.7).
 - HTTP client: `java.net.http.HttpClient`, from the JDK. JSON: `kotlinx-serialization-json`.
@@ -53,7 +55,7 @@ The original spec used "index" for two different things. Use these terms instead
 ## 4. CLI
 
 ```
-rag index  --pdf <file> --db <file> [--toc-pages <a-b[,c-d]>] [--locale en] [--reindex] [--no-embed]
+rag index  --file <pdf|epub> --db <file> [--toc-pages <a-b[,c-d]>] [--location-size 2000] [--locale en] [--reindex] [--no-embed]
            [--ollama-url http://localhost:11434] [--embed-model mxbai-embed-large] [--embed-dim 512]
 rag embed  --db <file> --book <bookId> [--ollama-url …] [--embed-model …] [--embed-dim …]  # (re)build embeddings only
 rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7
@@ -63,7 +65,9 @@ rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid
 rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries]
 ```
 
-- `--toc-pages`: PDF pages (1-based, inclusive) that contain the TOC. This is optional; see §5.3 for how chapters are found without it.
+- `--file` takes a PDF or an EPUB. The format comes from the content (`%PDF` header, or a zip whose `mimetype` entry is `application/epub+zip`), not the extension. `--pdf` stays as an alias of `--file`.
+- `--toc-pages`: PDF pages (1-based, inclusive) that contain the TOC. This is optional; see §5.3 for how chapters are found without it. It's a usage error (exit 2) for an EPUB.
+- `--location-size`: characters per synthetic page ("location") for an EPUB without a page list (§16.5).
 - `index` is **idempotent**. A book is identified by the SHA-256 of the PDF file. Re-indexing the same file does nothing unless `--reindex` is passed, which deletes and rebuilds that book.
 - `index` fails with exit code `5` if Ollama can't be reached or the model isn't pulled. In that case nothing for that book is committed. The error message tells the user to run `ollama pull <model>`.
 - `--no-embed` stores the structure only; run `rag embed` later.
@@ -77,8 +81,14 @@ rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries
 
 ### 5.1 Extract
 - Extract text page by page with `PDFTextStripper`, with `setSortByPosition(true)`. Keep where each page starts in the book text.
-- **Header/footer removal:** for each page, take the first 2 and last 2 non-empty lines and replace digits with `#`. Any line that appears on more than 30% of pages, **and on at least 3 pages**, is boilerplate and is dropped. The 3-page floor protects short documents, where a single page is already more than 30%. This also removes printed page numbers.
-- **Running chapter titles** repeat only within their chapter, so they usually stay under the 30% rule. They're removed after chapter detection (§5.3). On every page after a chapter's first page, an edge line is dropped when it equals the chapter's title once a leading or trailing page number is stripped, e.g. `1. Composable functions 4`. The chapter's first page keeps its heading.
+- **Title:** the PDF's metadata title, or the file name without its extension when there is none (CtCI has none).
+- **Header/footer removal:** for each page, the first 2 and last 2 non-empty lines are candidates.
+  - **Key:** candidates are compared by their words of 2+ letters, lowercased. Page numbers and OCR noise in separators (`… I 6th Edition 195` vs. `… \ 6th Edition 196`) then don't split one footer into many keys. A line with no such words keys on its text with digits replaced by `#`, which catches bare page numbers. A line with neither letters nor digits (e.g. `}`) is never boilerplate.
+  - **Book-wide:** a key on more than 30% of pages, **and on at least 3 pages**, is boilerplate and is dropped. The 3-page floor protects short documents, where a single page is already more than 30%.
+  - **Headings are protected:** on a chapter's first page, a line equal to the chapter's title is kept, because a heading and its running headers share a key.
+- **Running chapter headers** repeat only within their chapter, so they usually stay under the 30% rule. They're removed after chapter detection (§5.3). On every page of a chapter except its first:
+  - an edge line whose key is on at least **40%** of the chapter's other pages (and at least 3) is dropped, e.g. CtCI's `Solutions to Chapter 1 | Arrays and Strings`, which doesn't match the chapter's own title;
+  - an edge line equal to the chapter's title, once page numbers at either end are stripped **from both**, is dropped even in short chapters. Examples: `1. Composable functions 4`, and `5 Writing your first class 26`, where the leading `5` is the chapter number, not a page number.
 - **Footnotes** are cleaned on the raw page text, before NFKC turns superscripts into plain digits (`Birch¹` → `Birch1`):
   - A footnote is a line starting with superscript digits.
   - A footnote that is only a URL is removed, together with its wrapped continuation lines (no spaces, URL punctuation, not just a number).
@@ -90,7 +100,7 @@ rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries
 ### 5.2 Normalize
 Applied in this order, before splitting and before hashing:
 1. Unicode NFKC. This expands ligatures, e.g. `ﬁ` → `fi`.
-2. Normalize line endings to `\n`.
+2. Normalize line endings to `\n`. Then remove soft hyphens (U+00AD), joining the word across the line end when one is at a line end. CtCI has 411 of them.
 3. Rejoin words hyphenated at line ends: `exam-\nple` → `example`. Do this only when the letters on **both** sides are lowercase, so `well-\nKnown` and `COVID-\n19` are kept. Real compounds split at a line end (`well-\nknown`) get joined; that's an accepted trade-off.
 4. Collapse runs of spaces and tabs into one space. Trim trailing spaces on each line. Collapse 3 or more newlines into 2, so a paragraph gap is always exactly one blank line.
 
@@ -103,7 +113,16 @@ The result is the **book text**. It is stored in the DB as-is, and every offset 
 ### 5.3 Chapters
 Strategies are tried in order. The first one that produces at least 2 chapters wins.
 
-1. **PDF outline.** Use `PDDocumentOutline` top-level items that point to a page. The title is the outline title, and the start is that PDF page. An item titled "Contents" or "Table of Contents" isn't a chapter; it marks where the TOC starts. The TOC then continues while the following pages still look like a TOC (at least half of their lines are entries), up to the next outline item. If `--toc-pages` is given, those pages are used instead.
+1. **PDF outline.** Use `PDDocumentOutline` items that point to a page (two levels). The title is the outline title, and the start is that PDF page.
+   - **Contents:** an item titled "Contents" or "Table of Contents", at either level, isn't a chapter; it marks where the TOC starts. The TOC then continues while the following pages still look like a TOC, up to the next outline item. A page looks like a TOC when at least half of its lines are entries, or dot-leader runs whose page number OCR lost. If `--toc-pages` is given, those pages are used instead.
+   - **Parts** (shared with EPUB, §16.4; `OutlineChapters`): top-level items are chapters and their children are sections, which are ignored. The exception is a top-level item with children for which **both** of these hold:
+     1. some other top-level items have no children, *or* its title looks like a part (`Part …`, `Book …`, or a Roman numeral like `IX.`);
+     2. its children don't look like sections: they aren't numbered under it (`5` → `5.1`), and they average at least 3 pages each.
+
+     Its children then become chapters titled `Part › Child`. The part keeps a chapter of its own only if it starts before its first child. Real cases:
+     - CtCI: parts ("IX. Interview Questions" → 17 chapters) mixed with plain chapters ("VI. Big O").
+     - Kotlin for Android Developers: chapters with numbered sections ("5 …" → "5.1 …") next to plain front-matter items. No parts.
+     - Jetpack Compose internals: every chapter has unnumbered 1–2-page sections. No parts.
 2. **TOC pages** (only if `--toc-pages` is given). Parse each line with
    `^(?<title>.+?)[\s.·…_-]{2,}(?<page>\d+|[ivxlcdm]+)\s*$` (case-insensitive).
    - Skip a line that is just "Contents" or "Table of Contents".
@@ -115,7 +134,7 @@ Strategies are tried in order. The first one that produces at least 2 chapters w
 
 **Title matching** (used for the offset, the check, and chapter boundaries): compare hash-normalized lines. A title may also match two consecutive lines, because long headings wrap.
 
-**Chapter boundaries:** a chapter starts at the **offset of its title line** on its start page, or at the top of the page if the line isn't found. It ends just before the next chapter starts. Text before the first chapter becomes chapter **0**, titled "Front matter". Chapters are numbered from 1 in reading order, which can differ from the book's own numbering. In *Jetpack Compose internals*, "Prelude" is chapter 1 and "1. Composable functions" is chapter 2. The title keeps the book's own number. A chapter's `page_start` is the first page with text, so an image-only cover isn't counted.
+**Chapter boundaries:** a chapter starts at the **offset of its title line** (its own title, without a part prefix) on its start page, or at the top of the page if the line isn't found. When two starts land on the same offset (a part page with no text, then its first chapter), the later, more specific one wins. It ends just before the next chapter starts. Text before the first chapter becomes chapter **0**, titled "Front matter". Chapters are numbered from 1 in reading order, which can differ from the book's own numbering. In *Jetpack Compose internals*, "Prelude" is chapter 1 and "1. Composable functions" is chapter 2. The title keeps the book's own number. A chapter's `page_start` is the first page with text, so an image-only cover isn't counted.
 
 Only one level of chapters is supported in v1. Nested entries (`1.1 …`) are treated as top-level chapters only if they appear in the TOC or outline at the top level.
 
@@ -254,9 +273,9 @@ CREATE TABLE book (
   created_at    TEXT NOT NULL
 );
 
-CREATE TABLE page (
+CREATE TABLE page (                      -- one row per page: a PDF page, a printed page or a location (§16.5)
   book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
-  pdf_page INTEGER NOT NULL,
+  pdf_page INTEGER NOT NULL,               -- page ordinal, 1-based (the PDF page for PDFs); renamed `page_no` in schema v3
   char_start INTEGER NOT NULL,
   PRIMARY KEY (book_id, pdf_page)
 );
@@ -316,7 +335,7 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
 
-**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Phase 6 moves to version 2: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6.
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Phase 6 moves to version 2: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6. Phase 8 moves to version 3: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number.
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -403,6 +422,7 @@ The full chapter text is **not** returned. A caller that needs it gets it with `
 src/main/kotlin/rag/
   Main.kt                 CLI
   extract/PdfExtractor.kt     §5.1
+  epub/                       §16 (Phase 8): container/OPF/nav reading, DRM check, XHTML → book text
   extract/Normalizer.kt       §5.2
   structure/ChapterDetector.kt  §5.3 (OutlineStrategy, TocStrategy, Fallback)
   structure/Segmenter.kt      §5.4–5.5
@@ -433,6 +453,7 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
    4. `SUMMARY` hits in search, `--no-summaries`.
    5. Real-book run: measure time and size, and record them in §13.
 7. *(Planned)* Portability: desktop and Android from one code base (§15).
+8. *(Planned)* EPUB input (§16). Recommended order: **before** Phase 7. Its first step (the `BookSource` interface) is Phase 7's first step too, and an EPUB fixture gives the evaluation a second, committable book. Not decided yet.
 
 ## 11. Acceptance criteria
 
@@ -500,8 +521,15 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 - "what does this book cover" → the book summary in the top 3.
 - Time, the number of model calls, and the summary storage size are recorded in §13.
 
+**More local books** (`MoreBooksTest`, tag `book`; each runs only when its environment variable points to the user's copy, and the books never enter the repo):
+- `RAG_KOTLIN_PDF`, *Kotlin for Android Developers* (Leanpub): 35 chapters from the outline, with numbered sections staying inside them. No running footers (`5 Writing your first class 26`; 175 before the fixes).
+- `RAG_CTCI_PDF`, *Cracking the Coding Interview*, 6th ed. (708 pages, OCR text layer, no metadata title):
+  - 51 chapters from parts (`IX. Interview Questions › 1. Arrays and Strings`…); empty part pages don't stay chapters; the title comes from the file name.
+  - At most 10 OCR-mangled footers left (385 before) and at most 5 running headers (470 before).
+  - No soft hyphens, and no TOC pages in the text.
+
 **Evaluation set** (`src/test/resources/eval/compose-internals.jsonl`, run by `rag eval` and by `RealBookSearchTest` with tags `book` + `ollama`). This replaces the planned public-domain fixture book: the real book gives realistic questions, and the set holds only questions and page numbers, no book text.
-- 20 questions across all 7 chapters, each with its expected PDF page(s) and chapter. One JSON object per line: `{id, query, expectedPages, expectedChapter, kind}`.
+- 20 questions across all 7 chapters, each with its expected PDF page(s) and chapter. One JSON object per line: `{id, query, expectedPages, expectedChapter, kind}`. Phase 8 adds an optional, format-independent `expectedAnchor` (§16.7).
 - `kind` is `keyword` (11) or `paraphrase` (9). A paraphrase shares **no content words** with its answer pages after simple stemming. This is checked mechanically against the pages' text, not judged by eye ("word processors" for the book's "text editors", "screen narrator" for "TalkBack").
 - A question counts as found when one of the top k hits has a paragraph whose pages include an expected page.
 
@@ -565,6 +593,8 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
 - Query expansion (e.g. a small local LLM rewriting the question) for the remaining paraphrase misses; it costs one generation per query.
+- **OCR text layers** (e.g. CtCI) carry recognition errors: `ot` for `of`, `II` for `//`, `�`. Possible later steps: report an OCR-quality score at index time, and treat lines that are only dot leaders plus `pg N` (CtCI's printed cross-references) as noise.
+- **Code without line numbers** (Kotlin for Android Developers, CtCI) stays prose paragraphs. Detecting it would need layout cues such as a monospaced font, through PDFBox's text positions. EPUB marks code explicitly (§16.3).
 - Store phrase vectors (instead of computing them at query time) if the cost of finding the closest phrase shows up in profiling. Deferred.
 - Nested sections (1.1) as their own level: deferred to v2.
 - Smaller embedding models for low-RAM machines: `all-minilm` (384 dims, ~45 MB), or static embeddings (model2vec), which need no transformer at query time. Deferred until the evaluation in §11 exists to compare them.
@@ -583,7 +613,7 @@ Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and locati
 
 | Concern | Interface (in `core`) | Desktop | Android |
 |---|---|---|---|
-| PDF access: page text with paragraph breaks, outline items with target pages, TOC lines with x position | `PdfSource` | PDFBox (`org.apache.pdfbox`) | PdfBox-Android (`com.tom_roush.pdfbox`), the same API in another package. PDFBox itself depends on `java.awt`, which Android lacks. |
+| Book access: PDF page text with paragraph breaks, outline items with target pages, TOC lines with x position (and EPUB, §16) | `BookSource` | PDFBox (`org.apache.pdfbox`) | PdfBox-Android (`com.tom_roush.pdfbox`), the same API in another package. PDFBox itself depends on `java.awt`, which Android lacks. |
 | Storage | `Store` (today's `SqliteStore` API) | `androidx.sqlite` with the **bundled** driver | the same code and driver |
 | Embeddings | `Embedder` (exists) | `OllamaEmbedder` (exists), `OnnxEmbedder` | `OnnxEmbedder`; `OllamaEmbedder` can also reach an Ollama server on the local network |
 | Summaries | `Summarizer` (§8.1) | `OllamaSummarizer` | not in Phase 7 |
@@ -600,8 +630,9 @@ Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and locati
 ```
 core/                 pure Kotlin: pipeline, keys, quantizer, fusion, search, eval, interfaces
 store-sqlite/         Store on androidx.sqlite (bundled driver), JVM + Android
-pdf-pdfbox/           PdfSource on PDFBox (desktop)
-pdf-pdfbox-android/   PdfSource on PdfBox-Android
+pdf-pdfbox/           BookSource for PDF on PDFBox (desktop)
+pdf-pdfbox-android/   BookSource for PDF on PdfBox-Android
+epub/                 BookSource for EPUB on jsoup + java.util.zip (JVM and Android, §16)
 embed-ollama/         OllamaEmbedder, OllamaSummarizer
 embed-onnx/           OnnxEmbedder + WordPiece tokenizer (JVM and Android artifacts)
 cli/                  the `rag` command (desktop)
@@ -627,7 +658,7 @@ Vectors are comparable only if they come from the same model weights and the sam
 - The phone default may differ from the desktop default. An index used on both must use one model (§15.4).
 
 ### 15.7 Steps (each ends with passing tests; the desktop CLI keeps working throughout)
-1. Introduce `PdfSource` with the PDFBox adapter. No behavior change: all current tests pass.
+1. Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
 2. Replace `sqlite-jdbc` with `androidx.sqlite` + the bundled driver on desktop. Same schema; all tests pass, including real-book size and recall.
 3. Split the Gradle modules as in §15.3.
 4. Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model.
@@ -643,3 +674,120 @@ Vectors are comparable only if they come from the same model weights and the sam
 - **Indexing on Android:** the generated 12-page sample book (§11) indexes on an emulator with the same chapters, paragraph count and unit keys as on desktop.
 - **Cancellation:** cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it.
 
+
+## 16. EPUB input (Phase 8, planned)
+
+**Goal.** Index EPUB books with the same pipeline as PDFs. Only the first stage changes, turning the file into book text plus chapter starts and page starts. Segmentation (§5.4–5.5), keys, storage, embeddings, summaries and search are unchanged, and a search can mix PDF and EPUB books in one database.
+
+**Why it's worth it.** An EPUB is a zip of XHTML documents, so most of what §5.1–5.3 reconstructs from PDFs by heuristics is explicit markup:
+
+| PDF heuristic | EPUB source |
+|---|---|
+| header/footer and page-number removal | none needed: there are no printed pages |
+| paragraphs from blank lines and page breaks | block elements (`<p>`, headings, list items…) |
+| hyphen rejoining at line ends | none needed: text reflows (soft hyphens U+00AD are removed) |
+| chapters from bookmarks or TOC pages + offset | the navigation document, with direct links |
+| numbered code listings | `<pre>` blocks |
+| footnote markers glued to words | `noteref` links and `footnote` asides |
+
+**Scope.** Reflowable EPUB 2 and EPUB 3. Fixed-layout EPUBs (`rendition:layout` = `pre-paginated`) and DRM-protected EPUBs are rejected (§16.2).
+
+### 16.1 Reading the container
+1. `META-INF/container.xml` → the package document (`.opf`) path.
+2. **Package:**
+   - Metadata: `dc:title` → `book.title`; `dc:language` → the sentence-splitting locale when `--locale` isn't given.
+   - Manifest and **spine** (reading order). Spine items with `linear="no"` (pop-up notes, covers) are left out of the main text, but footnote lookups (§16.3) can still follow links into them.
+3. **Navigation:**
+   - EPUB 3: the manifest item with `properties="nav"`. Its `<nav epub:type="toc">` gives chapters, and its `<nav epub:type="page-list">` gives printed pages.
+   - EPUB 2: `toc.ncx`. Its `navMap` gives chapters, and its `pageList` gives printed pages.
+   - When both exist, EPUB 3's nav wins.
+4. The book is identified by the SHA-256 of the file, as for PDFs.
+
+### 16.2 Rejecting what can't be read (exit code 3)
+- **DRM** if any of these hold:
+  - `META-INF/rights.xml` exists (Adobe ADEPT);
+  - `META-INF/sinf.xml` exists (Apple FairPlay);
+  - `META-INF/encryption.xml` lists an `EncryptedData` whose target is a content document (XHTML, NCX or OPF) rather than a font.
+
+  Font obfuscation (algorithms `http://www.idpf.org/2008/embedding` and `http://ns.adobe.com/pdf/enc#RC`) protects only fonts and is accepted. The message says the EPUB is DRM-protected and can't be indexed; it gives no workaround.
+- **Fixed layout:** `rendition:layout` = `pre-paginated` in the package metadata.
+- **Malformed:** not a zip, no `container.xml`, no package document, or no spine. An XHTML document that doesn't parse is skipped with a warning, unless that leaves no text.
+
+### 16.3 From XHTML to book text
+Spine documents are parsed with `jsoup` in their reading order, and their text is appended to the book text. Each document starts a new paragraph.
+- **Blocks:** each block element becomes one paragraph, ending in a blank line (`\n\n`). Block elements are `p`, `h1`–`h6`, `li`, `dt`, `dd`, `blockquote` (its own text only, its child blocks separately), `figcaption`, `caption`, and `div`/`section` that contain text directly. Inline text is joined in order, and `<br>` becomes `\n`.
+- **Headings** are their own one-line paragraphs, as with PDFs (§14).
+- **Code:** `<pre>` (and block-level `<code>`) keeps its line breaks and becomes a code paragraph (`is_code`, §5.4). If its lines are numbered n, n+1, …, the numbers are removed with the same rule as §5.4.
+- **Tables:** one paragraph per table. Each row is one line, with its cells joined by ` | `. The size cap (§5.4) splits large tables between rows.
+- **Left out:** `script`, `style`, `nav` inside content documents, `img` (only its `figcaption` is kept), and elements with `epub:type="pagebreak"`, whose position is recorded for §16.5.
+- **Footnotes** (the same intent as §5.1):
+  - A reference is `<a epub:type="noteref">`, or a superscript link (`<sup><a href="#…">`) to a note. The marker text is removed from the sentence.
+  - A note is `<aside epub:type="footnote|endnote|rearnote">`, or an element with that `epub:type`, or the target of a reference.
+  - A note that contains only a URL is dropped. A prose note is kept as a paragraph where it appears in the document (usually after its section), without its own marker.
+  - A separate endnotes document follows the normal spine and navigation rules: it's a chapter if the TOC lists it, and it's left out if it's `linear="no"`.
+- **Normalization** (§5.2) applies as for PDFs. Soft hyphens (U+00AD) are removed first. Hyphen rejoining finds nothing, because there are no line ends.
+- Header/footer removal (§5.1) and the page-break paragraph rule (§5.4) don't apply.
+
+### 16.4 Chapters
+- **From the TOC:** each top-level entry links to a document and, optionally, an element id (`chapter3.xhtml#sec2`). Its offset is where that document's or element's text starts in the book text.
+- **Parts:** the same rule as for PDF outlines (§5.3, `OutlineChapters`). Many EPUB TOCs nest sections under every chapter, and those must stay sections; real parts become `Part I › 3. The Road`. Page spans for the "at least 3 pages per child" test come from text length, at the location size (§16.5), since EPUB has no pages. Deeper levels are ignored (§14).
+- **Boundaries** are as in §5.3: a chapter runs from its offset to the next one's, text before the first chapter is front matter (chapter 0), and chapters are numbered in reading order.
+- **Fallback:** a TOC with fewer than 2 usable entries is ignored. Each spine document that starts with a heading then becomes a chapter titled by that heading; documents without one join the previous chapter. With no headings at all, the whole book is one chapter titled "Book", as in §5.3.
+- `book.chapter_strategy` is `nav` (EPUB 3 nav), `ncx` (EPUB 2), `headings` or `fallback`.
+
+### 16.5 Pages and citations
+- **Printed pages:** when the EPUB has a page list, each entry's target (usually a `pagebreak` element) gives the offset where that printed page starts. `page.label` is the printed label (`"xii"`, `"57"`), and `book.page_kind = 'print'`. Citations then match the paper edition.
+- **Locations:** without a page list, the book text is split into synthetic pages of `--location-size` characters (default 2,000). `page.label` is `"loc N"`, and `book.page_kind = 'location'`.
+- Units and chapters keep storing `page_start` and `page_end` as **page ordinals** into `page`. `UnitRef` and `ChapterRef` (§8.2) gain `pageStartLabel` and `pageEndLabel` for display and citation, and the CLI prints labels. For PDFs the label is the PDF page number, so nothing changes for them.
+
+### 16.6 Interface
+```kotlin
+interface BookSource {                  // shared with Phase 7 (§15.2)
+  val format: String                    // "pdf" | "epub"
+  fun read(options: ReadOptions): StructuredBook  // book text, chapter starts, page starts/labels, code ranges, title, locale
+}
+```
+- `PdfBookSource` wraps today's `PdfExtractor` + `ChapterDetector`, with no behavior change. `EpubBookSource` implements §16.1–16.5.
+- `BookReader` picks the source by sniffing the file, and everything after it is shared.
+
+### 16.7 Evaluation across formats
+Page numbers don't carry between a PDF and an EPUB edition, or between different EPUB page kinds. So an evaluation question may name its answer in a format-independent way:
+- `expectedAnchor`: a short, distinctive phrase (at most 8 words) from the answer passage. A hit counts if its paragraph contains the anchor (hash-normalized), or overlaps the paragraph that does. Each question must have `expectedPages`, `expectedAnchor`, or both; `expectedChapter` stays optional.
+- Committed sets for **copyrighted** books keep using page numbers only, so no quotes from them enter the repository. Anchors are for public-domain fixtures and for local, uncommitted sets.
+- `rag eval` reports which kind of target matched.
+
+### 16.8 Fixtures
+- **Generated EPUBs**, built in the tests like `TestPdfs`, for each rule above:
+  - EPUB 3 nav and EPUB 2 NCX;
+  - parts with nested chapters;
+  - a page list, and its absence (locations);
+  - `noteref` / `footnote` asides, URL-only notes and prose notes;
+  - `<pre>` with and without line numbers, tables, soft hyphens;
+  - a `linear="no"` item;
+  - `rights.xml` / `encryption.xml` (DRM) and font-only obfuscation;
+  - fixed layout.
+- **A committed public-domain EPUB 3 from Standard Ebooks** (public-domain text, CC0 markup): a non-fiction or history title with endnotes and real chapter structure, chosen when Phase 8 starts.
+- **A committed Project Gutenberg EPUB 2** (`toc.ncx`, usually no page list), to cover the older format.
+- **A 20-question evaluation set** for the Standard Ebooks fixture, made like §11's (keyword questions plus mechanically checked paraphrases), with `expectedAnchor` targets. It's run with the **current settings unchanged** (model, 512 dims, keyword weight 0.5, 200 candidates), to test whether the calibration from the first book generalizes. Re-tuning happens only if recall drops by more than one question's worth relative to §11, and any re-tuning is checked against both sets.
+
+### 16.9 Steps (each ends with passing tests)
+1. `BookSource` + `PdfBookSource`, used by `BookReader`. No behavior change (shared with Phase 7, step 1).
+2. Container, package, navigation and the DRM / fixed-layout checks (§16.1–16.2).
+3. XHTML → book text: blocks, code, tables, footnotes, soft hyphens (§16.3).
+4. Chapters (§16.4), pages and labels with schema version 3 and its migration (§16.5).
+5. CLI `--file` with format sniffing; `expectedAnchor` in `rag eval`; fixtures and their evaluation set (§16.7–16.8).
+6. Record the evaluation results and the index sizes for the EPUB fixtures in §11 and §13.
+
+### 16.10 Acceptance criteria (Phase 8)
+- **No PDF regressions:** every Phase 1–5 test passes unchanged after step 1, and the real-book recall and size are unchanged.
+- **Generated EPUBs:**
+  - EPUB 3 nav and EPUB 2 NCX books give the same chapters, paragraphs and unit keys for the same content.
+  - Parts give prefixed chapter titles, front matter is chapter 0, and a book without a TOC falls back to headings.
+  - Footnote markers are gone from the text, URL-only notes are dropped, and prose notes are kept as paragraphs.
+  - `<pre>` blocks are code paragraphs without line numbers, tables are one paragraph with one line per row, and no soft hyphen is left.
+  - With a page list, every unit has print page labels, and a unit's labels match the `pagebreak`s around it. Without one, the location count is ⌈text length / location size⌉.
+  - DRM (`rights.xml`, `sinf.xml`, or an encrypted content document) and fixed layout → exit code 3 with a clear message; font-only obfuscation indexes normally.
+  - The offset invariant (§11) holds for every unit.
+- **Mixed database:** a PDF book and an EPUB book in one DB can each be searched alone (`--book`) and together; results show the right page labels for each.
+- **Migration:** a version-1 or version-2 database opens, migrates to version 3, and still answers the evaluation set with the same recall.
+- **Fixture books:** both committed EPUBs index without warnings, and the Standard Ebooks evaluation set is recorded with the unchanged settings. Its hybrid recall@5 is a floor test; the spec records the measured value rather than a target.

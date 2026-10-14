@@ -10,7 +10,7 @@ data class TocEntry(val title: String, val printedPage: Int)
 object TocParser {
 
     private val entry = Regex(
-        "^(?<title>.+?)[\\s.·…_-]{2,}(?<page>\\d+|[ivxlcdm]+)\\s*$",
+        "^(?<title>.+?)[\\s.·•∙⋅‧…_-]{2,}(?<page>\\d+|[ivxlcdm]+)\\s*$",
         RegexOption.IGNORE_CASE,
     )
     private val contentsHeading = Regex("^(table of )?contents$", RegexOption.IGNORE_CASE)
@@ -19,10 +19,16 @@ object TocParser {
     /** Lines indented up to this much past the leftmost entry still count as top level. */
     private const val INDENT_TOLERANCE = 3f
 
-    /** True when at least half of the page's non-blank lines (minimum 2) look like TOC entries. */
+    /** A run of dot leaders, even when OCR lost the page number after it. */
+    private val leaders = Regex("[.·•∙⋅‧…](\\s*[.·•∙⋅‧…]){4,}")
+
+    /**
+     * True when at least half of the page's non-blank lines (minimum 2) look like TOC entries: a
+     * full entry, or a line with a dot-leader run (OCR sometimes drops the page number).
+     */
     fun looksLikeToc(pageText: String): Boolean {
         val lines = pageText.lines().map { it.trim() }.filter { it.isNotEmpty() && !contentsHeading.matches(it) }
-        val entries = lines.count { entry.matches(it) }
+        val entries = lines.count { entry.matches(it) || leaders.containsMatchIn(it) }
         return entries >= 2 && entries * 2 >= lines.size
     }
 

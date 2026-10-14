@@ -70,4 +70,15 @@ class ChaptersTest {
 
         assertEquals("One\nBody.\n", b.slice(chapters[1]))
     }
+
+    @Test
+    fun `when a part and its first chapter start at the same place, the chapter wins`() {
+        // Page 2 is a part page without text; its first chapter starts on page 3.
+        val b = book("Front.", "", "One\nBody.")
+
+        val chapters = Chapters.compute(b, listOf(ChapterStart("IX. Part", 2), ChapterStart("IX. Part › One", 3)))
+
+        assertEquals(listOf("Front matter", "IX. Part › One"), chapters.map { it.title })
+        assertEquals("One\nBody.\n", b.slice(chapters[1]))
+    }
 }

@@ -11,11 +11,12 @@ class EvaluationTest {
     private fun hit(pages: IntRange, chapter: String) = Hit(
         score = 0.0,
         matchType = MatchType.LEXICAL,
-        phrase = UnitRef("k", "t", pages.first, pages.last),
-        paragraph = UnitRef("k", "t", pages.first, pages.last),
-        chapter = ChapterRef(1, chapter, 1, 100, "k"),
+        phrase = UnitRef("k", "t", pages.first, pages.last, "${pages.first}", "${pages.last}"),
+        paragraph = UnitRef("k", "t", pages.first, pages.last, "${pages.first}", "${pages.last}"),
+        chapter = ChapterRef(1, chapter, 1, 100, "k", "1", "100"),
         bookId = 1,
         bookTitle = null,
+        pageKind = "pdf",
     )
 
     private val question = EvalQuestion("q1", "query", listOf(17, 18), "One", "keyword")
@@ -65,5 +66,21 @@ class EvaluationTest {
         }
 
         assertEquals(listOf("q1", "q2"), Evaluation.load(file).map { it.id })
+    }
+
+    @Test
+    fun `an anchor phrase answers regardless of pages`() {
+        val anchored = EvalQuestion("q9", "query", expectedAnchor = "the BIKE  went", kind = "paraphrase")
+        val hit = hit(40..40, "Two").copy(paragraph = UnitRef("k", "Then the bike went really fast.", 40, 40, "loc 40", "loc 40"))
+
+        assertEquals(1, Evaluation.pageRank(listOf(hit), anchored))
+        assertNull(Evaluation.chapterRank(listOf(hit), anchored))
+    }
+
+    @Test
+    fun `a question needs pages or an anchor`(@TempDir dir: File) {
+        val file = File(dir, "bad.jsonl").apply { writeText("""{"id":"q1","query":"x"}""") }
+
+        kotlin.test.assertFailsWith<IllegalArgumentException> { Evaluation.load(file) }
     }
 }

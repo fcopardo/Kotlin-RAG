@@ -6,6 +6,9 @@ sealed class RagException(message: String, val exitCode: Int, cause: Throwable? 
 
     class PdfUnreadable(message: String, cause: Throwable? = null) : RagException(message, 3, cause)
 
+    /** Not a supported book, a damaged EPUB, a DRM-protected or fixed-layout EPUB. */
+    class BookUnreadable(message: String, cause: Throwable? = null) : RagException(message, 3, cause)
+
     class NoTextLayer(message: String) : RagException(message, 3)
 
     class EmbeddingBackendUnavailable(message: String, cause: Throwable? = null) : RagException(message, 5, cause)

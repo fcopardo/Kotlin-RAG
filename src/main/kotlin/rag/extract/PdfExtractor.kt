@@ -17,8 +17,17 @@ class ExtractedBook(
     val text: String,
     val pageStarts: IntArray,
     val codeRanges: List<IntRange> = emptyList(),
+    /** Display names of pages ("xii", "57", "loc 3"); null means the page number itself (PDF). */
+    val pageLabels: List<String>? = null,
 ) {
+    init {
+        require(pageLabels == null || pageLabels.size == pageStarts.size) { "one label per page" }
+    }
+
     val pageCount: Int get() = pageStarts.size
+
+    /** Label of 1-based page [page]. */
+    fun pageLabel(page: Int): String = pageLabels?.get(page - 1) ?: page.toString()
 
     /** 1-based PDF page containing the char at [offset]. */
     fun pageOf(offset: Int): Int {
@@ -62,7 +71,7 @@ class PdfExtractor(
         skipPages: Set<Int> = emptySet(),
     ): ExtractedBook {
         val kept = rawPages.mapIndexed { i, page -> if (i + 1 in skipPages) "" else Footnotes.clean(page) }
-        val cleaned = boilerplateRemover.removeRunningTitles(boilerplateRemover.remove(kept), chapterStarts)
+        val cleaned = boilerplateRemover.removeRunningTitles(boilerplateRemover.remove(kept, chapterStarts), chapterStarts)
         val pages = cleaned.map { codeListings.clean(Normalizer.normalize(it)) }
 
         val text = StringBuilder()
