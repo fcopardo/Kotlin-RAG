@@ -75,9 +75,9 @@ class RealBookSearchTest {
     }
 
     /**
-     * How much the compact vectors (Matryoshka 256 dims, binary first pass, int8 rescoring) agree
+     * How much the compact vectors (Matryoshka 512 dims, binary first pass, int8 rescoring) agree
      * with exact float search at 768 dims: average top-10 overlap over paraphrase questions.
-     * Measured 0.74 at 256 dims (0.83 at 512); the floor catches regressions.
+     * Measured 0.83 at 512 dims (0.74 at 256); the floor catches regressions.
      */
     @Test
     fun `compact vectors stay close to full float search`() {
@@ -108,7 +108,7 @@ class RealBookSearchTest {
         }.average()
 
         println("compact-vs-float768 overlap@10 at ${Indexer.DEFAULT_DIM} dims: %.2f".format(overlap))
-        assertTrue(overlap >= 0.70, "overlap@10 = $overlap")
+        assertTrue(overlap >= 0.80, "overlap@10 = $overlap")
         assertEquals(Indexer.DEFAULT_DIM, Quantizer.truncate(FloatArray(768), Indexer.DEFAULT_DIM).size)
     }
 }

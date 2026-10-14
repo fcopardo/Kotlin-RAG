@@ -39,7 +39,7 @@ data class Hit(
  * Search (SPEC §8.3): exact hash lookup, BM25 over paragraphs, binary-then-int8 vector search,
  * reciprocal rank fusion, then the closest phrase inside each paragraph.
  *
- * Memory: only the binary vectors of searched books (32 bytes per paragraph at 256 dims) and the
+ * Memory: only the binary vectors of searched books (64 bytes per paragraph at 512 dims) and the
  * text of at most [textCacheBooks] books stay in RAM.
  */
 class Searcher(

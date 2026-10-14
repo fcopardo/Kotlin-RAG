@@ -85,7 +85,7 @@ class Indexer(
     }
 
     companion object {
-        const val DEFAULT_DIM = 256
+        const val DEFAULT_DIM = 512
         val EXTRACTOR = "pdfbox-${Version.getVersion()}/norm-v1"
 
         fun sha256(file: File): String {

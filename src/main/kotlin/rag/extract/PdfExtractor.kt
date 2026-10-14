@@ -61,7 +61,7 @@ class PdfExtractor(
         chapterStarts: List<Pair<String, Int>> = emptyList(),
         skipPages: Set<Int> = emptySet(),
     ): ExtractedBook {
-        val kept = rawPages.mapIndexed { i, page -> if (i + 1 in skipPages) "" else page }
+        val kept = rawPages.mapIndexed { i, page -> if (i + 1 in skipPages) "" else Footnotes.clean(page) }
         val cleaned = boilerplateRemover.removeRunningTitles(boilerplateRemover.remove(kept), chapterStarts)
         val pages = cleaned.map { codeListings.clean(Normalizer.normalize(it)) }
 

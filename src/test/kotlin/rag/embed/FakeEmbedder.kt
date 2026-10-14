@@ -5,7 +5,7 @@ package rag.embed
  * vectors, so search tests behave sensibly without Ollama. It knows nothing about meaning.
  */
 class FakeEmbedder(
-    override val dim: Int = 256,
+    override val dim: Int = 768, // like nomic-embed-text, so the default 512-dim truncation fits
     override val model: String = "fake-bow",
 ) : Embedder {
     private val word = Regex("\\p{L}+")

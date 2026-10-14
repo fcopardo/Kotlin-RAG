@@ -74,6 +74,13 @@ class IndexerTest {
     }
 
     @Test
+    fun `a new database records schema version 1`() {
+        val version = store.connection.createStatement().use { s -> s.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } }
+
+        assertEquals(SqliteStore.SCHEMA_VERSION, version)
+    }
+
+    @Test
     fun `indexing the same file again inserts nothing`() {
         val first = indexer().index(pdf)
         val units = store.count("unit")

@@ -106,14 +106,14 @@ class RealBookTest {
     }
 
     @Test
-    fun `the indexed book fits the 2_5 MB budget`(@org.junit.jupiter.api.io.TempDir dir: File) {
+    fun `the indexed book fits the 3 MB budget`(@org.junit.jupiter.api.io.TempDir dir: File) {
         val db = File(dir, "book.db")
         rag.store.SqliteStore(db.path).use { store ->
-            rag.index.Indexer(store).index(pdf!!, embedder = rag.embed.FakeEmbedder(dim = 768), embedDim = 256)
+            rag.index.Indexer(store).index(pdf!!, embedder = rag.embed.FakeEmbedder(dim = 768), embedDim = rag.index.Indexer.DEFAULT_DIM)
         }
         val bytes = dir.listFiles()!!.filter { it.name.startsWith("book.db") }.sumOf { it.length() }
 
-        assertTrue(bytes <= 2.5 * 1024 * 1024, "DB is ${bytes / 1024} KB")
+        assertTrue(bytes <= 3 * 1024 * 1024, "DB is ${bytes / 1024} KB")
     }
 
     @Test
@@ -121,6 +121,9 @@ class RealBookTest {
         val result = BookReader().read(pdf!!)
 
         assertFalse(". . . . . . . ." in result.book.text, "TOC pages should be left out")
+        // 35 URL footnotes and their markers are gone (NFKC would have turned "Birch¹" into "Birch1").
+        assertFalse(Regex("(?m)^\\d+https?://").containsMatchIn(result.book.text), "footnote lines left")
+        listOf("Birch1", "cs.android.com2", "Shikov5").forEach { assertFalse(it in result.book.text, "marker left: $it") }
         result.chapters.drop(1).forEach { c ->
             val target = Normalizer.hashNormalize(c.title)
             val chapterText = result.text(c)

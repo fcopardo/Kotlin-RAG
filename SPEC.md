@@ -54,12 +54,12 @@ The original spec used "index" for two different things. Use these terms instead
 
 ```
 rag index  --pdf <file> --db <file> [--toc-pages <a-b[,c-d]>] [--locale en] [--reindex] [--no-embed]
-           [--ollama-url http://localhost:11434] [--embed-model nomic-embed-text] [--embed-dim 256]
+           [--ollama-url http://localhost:11434] [--embed-model nomic-embed-text] [--embed-dim 512]
 rag embed  --db <file> --book <bookId> [--ollama-url …] [--embed-model …] [--embed-dim …]  # (re)build embeddings only
-rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b]                  # optional, §5.7
+rag summarize --db <file> --book <bookId> [--summary-model llama3.2:3b] [--ollama-url …] [--redo]  # Phase 6, §5.7
 rag books  --db <file>                                                                  # list indexed books
-rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--json]
-rag dump   --db <file> --book <bookId> [--chapters | --chapter <n>]
+rag search --db <file> --query "<text>" [--k 5] [--book <bookId>] [--mode hybrid|lexical|vector] [--no-summaries] [--json]
+rag dump   --db <file> --book <bookId> [--chapters | --chapter <n> | --summaries]
 ```
 
 - `--toc-pages`: PDF pages (1-based, inclusive) that contain the TOC. This is optional; see §5.3 for how chapters are found without it.
@@ -77,6 +77,12 @@ rag dump   --db <file> --book <bookId> [--chapters | --chapter <n>]
 - Extract text page by page with `PDFTextStripper`, with `setSortByPosition(true)`. Keep where each page starts in the book text.
 - **Header/footer removal:** for each page, take the first 2 and last 2 non-empty lines and replace digits with `#`. Any line that appears on more than 30% of pages, **and on at least 3 pages**, is boilerplate and is dropped. The 3-page floor protects short documents, where a single page is already more than 30%. This also removes printed page numbers.
 - **Running chapter titles** repeat only within their chapter, so they usually stay under the 30% rule. They're removed after chapter detection (§5.3). On every page after a chapter's first page, an edge line is dropped when it equals the chapter's title once a leading or trailing page number is stripped, e.g. `1. Composable functions 4`. The chapter's first page keeps its heading.
+- **Footnotes** are cleaned on the raw page text, before NFKC turns superscripts into plain digits (`Birch¹` → `Birch1`):
+  - A footnote is a line starting with superscript digits.
+  - A footnote that is only a URL is removed, together with its wrapped continuation lines (no spaces, URL punctuation, not just a number).
+  - A footnote with prose is kept, without its marker.
+  - A superscript in the body is removed only when its number is a footnote on the same page, so real superscripts (`n²`) stay.
+  - *Jetpack Compose internals* has 35 footnotes, all URL-only.
 - **TOC pages** are left out of the book text. They stay as empty pages, so PDF page numbers and offsets still line up. Otherwise searches would hit the list of titles instead of the chapters.
 
 ### 5.2 Normalize
@@ -130,26 +136,66 @@ Only one level of chapters is supported in v1. Nested entries (`1.1 …`) are tr
 - Embed every **paragraph**. Phrases, chapters and the book are not embedded in v1. At retrieval time a phrase is too short to carry much meaning, and a chapter is too long for one vector to represent.
 - **Embedding input:** `"search_document: " + chapterTitle + "\n" + paragraphText`. For prose, `paragraphText` has its newlines flattened to spaces; code keeps its lines. Prefixing the chapter title adds context that a short paragraph lacks. The `search_document:` prefix is what `nomic-embed-text` requires for documents. It comes from the `EmbeddingModel` config (§8.1) so another model can use a different prefix or none.
 - Send paragraphs in batches of **32** per request (`POST /api/embed` with `input: [...]`).
-- **Matryoshka truncation:** keep the first `--embed-dim` dimensions (default **256**, out of 768) and L2-normalize again. `nomic-embed-text` v1.5 is trained for 768/512/256/128/64. Ollama returns vectors that are already normalized, so truncation happens client-side after normalization. That's a close approximation of nomic's recipe (layer norm → truncate → normalize), and the evaluation in §11 checks the loss. `--embed-dim` must be a multiple of 64.
+- **Matryoshka truncation:** keep the first `--embed-dim` dimensions (default **512**, out of 768; chosen over 256 on 2026-10-14 after the measurements in §11) and L2-normalize again. `nomic-embed-text` v1.5 is trained for 768/512/256/128/64. Ollama returns vectors that are already normalized, so truncation happens client-side after normalization. That's a close approximation of nomic's recipe (layer norm → truncate → normalize), and the evaluation in §11 checks the loss. `--embed-dim` must be a multiple of 64.
 - **Quantize and store two forms. Floats are never stored.**
   - **int8:** `q[i] = round(v[i] / scale)` with `scale = max|v| / 127`. That's 1 byte per dimension plus a 4-byte scale. It's used to rescore candidates.
   - **binary:** bit `i` is set when `v[i] > 0`, packed into 64-bit words. That's 1 bit per dimension. It's used for the first-pass scan.
 - **Resumable:** embeddings are written in their own transactions, one per batch, after the structural data is committed. A paragraph without a row in `embedding` gets embedded on the next `rag embed` run. A book counts as fully indexed only when every paragraph has an embedding (`book.embed_status = 'complete'`).
 - Retry policy: up to 3 tries with exponential backoff (1s, 2s, 4s) per batch. After that, stop with exit code 5. The structure stays committed and `embed_status` stays `partial`.
 
-### 5.7 Summaries (optional, RAPTOR-style)
-Paragraph vectors can't answer "what is chapter 5 about?". Summaries can, and since they're made once at index time, query cost doesn't change.
-- `rag summarize` uses a small local model through Ollama `POST /api/generate` (default `llama3.2:3b`). Nothing leaves the machine.
-- **Tree:**
-  1. Split each chapter's paragraphs into consecutive **sections** of about 2,000 tokens.
-  2. Summarize each section in at most 120 words.
-  3. Summarize the section summaries into a **chapter summary** of at most 200 words.
-  4. Summarize the chapter summaries into a **book summary** of at most 250 words.
+### 5.7 Summaries (Phase 6, optional, RAPTOR-style)
 
-  The input never exceeds a small model's context window.
-- Summaries are generated text, so they're stored **with** their text (`summary` table, §7). They're embedded and quantized like paragraphs, and they're indexed in `summary_fts`.
-- A summary hit returns the summary text plus its chapter (or the book). The phrase and paragraph come from the chapter's best-matching paragraph for the same query (§8.3).
-- It's resumable and idempotent like `embed`: existing summaries for the same model are kept.
+**Why.** Paragraph vectors answer "where does the book say X?". They can't answer "what is chapter 5 about?" or "what does this book cover?", because no single paragraph says that. Summaries can. They're made once at index time, so a query costs the same as before: one more small binary scan.
+
+**Scope.** Summaries are an optional, separate step (`rag summarize`) on a book that is already indexed and embedded. Search works the same without them.
+
+#### 5.7.1 Model and settings
+- **Backend:** Ollama `POST /api/generate`, `stream: false`, behind a `Summarizer` interface (§8.1). Nothing leaves the machine.
+- **Default model:** `llama3.2:3b`, about 2 GB of RAM, and only while `summarize` runs. Alternatives are `qwen2.5:3b`, or `gemma3:1b` for very small machines. The model must be pulled; otherwise exit code 5 with the `ollama pull` hint, as for embeddings.
+- **Options:** `temperature: 0`, `seed: 42`, `num_ctx: 4096`, `num_predict` = 2 × the word cap. Results are as repeatable as Ollama allows.
+- **Prompt version:** the prompts below are version `v1`, stored with each summary. Changing a prompt means bumping the version, and `summarize` then treats older summaries as stale.
+
+#### 5.7.2 The summary tree
+Built per chapter from the existing paragraphs. No re-parsing.
+1. **Sections:** consecutive paragraphs of a chapter, packed greedily up to **1,500 tokens** (words × 1.3, as in §5.4). That leaves room in a 4,096-token context for the prompt and the answer. A code paragraph contributes at most its first **15 lines**, followed by `…`, so listings can't fill the context.
+2. **Section summary:** at most **120 words**, made from the section's text.
+3. **Chapter summary:** at most **200 words**, made from the chapter's section summaries in order.
+   - If those summaries are more than 2,500 tokens together, they're first reduced in groups of at most 12 into **group** summaries (at most 150 words each). This repeats until they fit.
+   - In *Jetpack Compose internals*, "4. Compose UI" (about 26k tokens, ~18 sections) needs one group level.
+   - A chapter with a single section gets its chapter summary straight from the paragraphs; there's no separate section summary.
+4. **Book summary:** at most **250 words**, made from the chapter summaries in order. Front matter is left out unless it is the only chapter.
+
+Every summary records the span of book text it covers (`char_start`–`char_end`) and its pages. That's what makes summary hits citable.
+
+#### 5.7.3 Prompts (`v1`)
+System prompt, for every level:
+> You summarize parts of a technical book for a search index. Use only the text you are given. Do not add facts, opinions or examples. Keep names of APIs, classes, functions and terms exactly as written. Write plain prose, no lists, no headings, no preamble.
+
+User prompt per level (`{…}` are filled in):
+- **section:** `Book: {bookTitle}. Chapter: {chapterTitle}.\nSummarize this passage in at most {maxWords} words, covering every main point:\n\n{text}`
+- **group / chapter:** `Book: {bookTitle}. Chapter: {chapterTitle}.\nThese are summaries of consecutive parts of the chapter, in order. Combine them into one summary of at most {maxWords} words that says what the chapter covers:\n\n{numbered summaries}`
+- **book:** `Book: {bookTitle}.\nThese are summaries of the book's chapters, in order. Write one summary of at most {maxWords} words that says what the book covers and how it is organized:\n\n{chapter title: summary, …}`
+
+**Cleaning the output:**
+- Strip a leading preamble line ("Here is a summary…", "Summary:").
+- Trim whitespace.
+- If the text is over the word cap, cut it at the last sentence end before the cap.
+- An empty result counts as a failure and is retried. The retry policy is the same as embeddings: 3 tries, backoff 1s, 2s, 4s.
+
+#### 5.7.4 Storage and embedding
+- Summaries are generated text, so they're stored **with** their text (`summary` table, §7). This is the one exception to "text stored once".
+- Each summary is embedded like a paragraph. The input is `"search_document: " + chapterTitle + "\n" + summaryText` (the book title for the book summary). It's truncated and quantized like paragraphs (512 dimensions, int8 + bits) and indexed in `summary_fts`.
+- `book.summary_model`, `book.summary_prompt` and `book.summary_status` (`none` / `partial` / `complete`) track progress.
+
+#### 5.7.5 Resuming, idempotency, invalidation
+- Each summary is committed as it's made, so an interrupted run resumes: existing summaries with the same model and prompt version are kept, and only missing ones are generated, bottom-up.
+- A chapter summary is made only when all of its sections (and groups) exist, and the book summary only when all chapter summaries exist.
+- `--redo`, or a different `--summary-model`, deletes the book's summaries first.
+- `rag index --reindex` deletes them with the book (cascade), together with their FTS rows.
+
+#### 5.7.6 Cost (to be measured in Phase 6)
+- **Time:** *Jetpack Compose internals* has about 94k tokens of text, giving about 65 section summaries, ~8 group/chapter summaries and 1 book summary. That's roughly 75 model calls, about 5–10 minutes with `llama3.2:3b` on an Apple-silicon laptop.
+- **Storage:** about 75 × (≤ 150 words ≈ 1 KB text + 580 B vectors), around **120 KB**. In RAM during search: 75 × 64 B ≈ **5 KB** of binary vectors.
 
 ## 6. Unit keys and master record
 
@@ -198,8 +244,11 @@ CREATE TABLE book (
   chapter_strategy TEXT NOT NULL,          -- outline | toc | fallback
   page_offset   INTEGER,                   -- TOC strategy only
   embed_model   TEXT,                      -- e.g. "nomic-embed-text"
-  embed_dim     INTEGER,                   -- after truncation, e.g. 256
+  embed_dim     INTEGER,                   -- after truncation, e.g. 512
   embed_status  TEXT NOT NULL DEFAULT 'none' CHECK (embed_status IN ('none','partial','complete')),
+  summary_model TEXT,                      -- Phase 6, e.g. "llama3.2:3b"
+  summary_prompt TEXT,                     -- Phase 6, prompt version, e.g. "v1"
+  summary_status TEXT NOT NULL DEFAULT 'none' CHECK (summary_status IN ('none','partial','complete')),
   created_at    TEXT NOT NULL
 );
 
@@ -240,15 +289,22 @@ CREATE TABLE embedding (
   vec_bits BLOB NOT NULL                 -- dim / 8 bytes: sign bits, 64-bit words, little-endian
 );
 
-CREATE TABLE summary (
-  id       INTEGER PRIMARY KEY,
-  book_id  INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
-  unit_id  INTEGER NOT NULL REFERENCES unit(id) ON DELETE CASCADE,   -- the chapter or book unit
-  level    TEXT NOT NULL CHECK (level IN ('section','chapter','book')),
-  ordinal  INTEGER NOT NULL,             -- section order within the chapter
-  model    TEXT NOT NULL,
-  text     TEXT NOT NULL,                -- generated, so it is stored
-  embed_model TEXT, dim INTEGER, scale REAL, vec_i8 BLOB, vec_bits BLOB
+CREATE TABLE summary (                   -- Phase 6 (§5.7)
+  id         INTEGER PRIMARY KEY,
+  book_id    INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+  unit_id    INTEGER NOT NULL REFERENCES unit(id) ON DELETE CASCADE,  -- the chapter, or the book unit for level 'book'
+  level      TEXT NOT NULL CHECK (level IN ('section','group','chapter','book')),
+  depth      INTEGER NOT NULL DEFAULT 0,  -- group reduction round, 0 for other levels
+  ordinal    INTEGER NOT NULL,            -- order within (unit, level, depth)
+  char_start INTEGER NOT NULL,            -- span of book text it covers
+  char_end   INTEGER NOT NULL,            -- inclusive
+  page_start INTEGER NOT NULL,
+  page_end   INTEGER NOT NULL,
+  model      TEXT NOT NULL,
+  prompt     TEXT NOT NULL,               -- prompt version, e.g. "v1"
+  text       TEXT NOT NULL,               -- generated, so it is stored
+  embed_model TEXT, dim INTEGER, scale REAL, vec_i8 BLOB, vec_bits BLOB,
+  UNIQUE (unit_id, level, depth, ordinal)
 );
 
 CREATE VIRTUAL TABLE para_fts    USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
@@ -257,6 +313,8 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- rowid = unit.id (para_fts: kind 'g', phrase_fts: kind 'p') or summary.id.
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
+
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Phase 6 moves to version 2: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6.
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -277,6 +335,19 @@ interface Embedder {
 - Truncation and quantization (§5.6) happen in a pure `Quantizer` after the embedder, so every `Embedder` gets them.
 - **Model consistency:** a search must use the same model (and dimension) as the book's `embed_model` and `embed_dim`. If they don't match, vector search for that book fails with exit code 5 and a hint to run `rag embed`. It never silently mixes vectors from different models.
 - Tests use a `FakeEmbedder`: a deterministic hashed bag-of-words vector, so they don't need Ollama (§11).
+
+**Summary backend (Phase 6, §5.7):**
+```kotlin
+enum class SummaryLevel { SECTION, GROUP, CHAPTER, BOOK }
+data class SummaryTask(val level: SummaryLevel, val bookTitle: String, val chapterTitle: String?,
+                       val inputs: List<String>, val maxWords: Int)
+interface Summarizer {
+  val model: String
+  fun checkAvailable() {}
+  fun summarize(task: SummaryTask): String   // raw model output; cleaned by SummaryText.clean (§5.7.3)
+}
+```
+- `OllamaSummarizer` builds the `v1` prompts from a `SummaryTask` and calls `/api/generate` with the options in §5.7.1. `FakeSummarizer` returns the first sentence of each input.
 
 ### 8.2 API
 
@@ -306,14 +377,17 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
 2. **Lexical path** (`HYBRID`, `LEXICAL`). Run FTS5 BM25 over `para_fts` and take the top `N = max(4k, 20)`. The query is the question's distinct words, each quoted (so FTS syntax is inert) and joined with `OR`. English stop words (`how`, `the`, `which` …) are dropped unless nothing else is left, because in an OR query they match nearly every paragraph and push the meaningful words down.
 3. **Vector path** (`HYBRID`, `VECTOR`). Binary first pass, then int8 rescoring:
    - Call `embedQuery(query)`, then truncate and normalize it. The query stays float.
-   - **First pass:** compute the Hamming distance between the query's sign bits and every paragraph's `vec_bits` in scope. Use `Long.bitCount` on 64-bit words; at 256 dimensions that's 4 words per paragraph. Keep the `R = max(10·k, 100)` nearest.
+   - **First pass:** compute the Hamming distance between the query's sign bits and every paragraph's `vec_bits` in scope. Use `Long.bitCount` on 64-bit words; at 512 dimensions that's 8 words per paragraph. Keep the `R = max(10·k, 100)` nearest.
    - **Rescore:** read those `R` rows' `vec_i8` and `scale` from SQLite and compute `dot(query, q·scale)`. Keep the top `N`.
-   - **In RAM:** only the binary vectors (plus their unit ids), cached per book. That's 32 bytes per paragraph at 256 dimensions, about 53 KB for this book. int8 vectors are read only for the `R` candidates.
-   - Summary vectors (§5.7) go through the same path, and their hits become `SUMMARY` hits.
+   - **In RAM:** only the binary vectors (plus their unit ids), cached per book. That's 64 bytes per paragraph at 512 dimensions, about 106 KB for this book. int8 vectors are read only for the `R` candidates.
+   - Summary vectors (§5.7) go through the same binary → int8 path, with their own small per-book cache.
    - If Ollama is unreachable in `HYBRID` mode, log a warning and fall back to lexical only. In `VECTOR` mode, fail with exit code 5.
 4. **Fusion** (`HYBRID`): reciprocal rank fusion, `score = Σ 1 / (60 + rank)` over the lexical and vector lists. In single-path modes, use that path's own ranking.
+   - **Summaries (Phase 6):** when the books in scope have summaries and `--no-summaries` isn't set, a third list joins the fusion. It's the summaries ranked by their own RRF of `summary_fts` BM25 and summary vectors.
+   - A summary hit is `SUMMARY`, with `Hit.summary` set to the summary text and `Hit.chapter` set to its chapter (or, for the book summary, the chapter of its chosen paragraph).
+   - At most **2** summary hits are returned per query, so passages aren't crowded out. They never replace exact hits.
 5. **Closest phrase:** for each paragraph hit, the phrase with the best BM25 in `phrase_fts` limited to that paragraph's children. If no phrase matches lexically, which is common for vector-only hits, embed that paragraph's phrases on the fly and pick the one most similar to the query. For v1, phrase vectors are not stored.
-   - For a `SUMMARY` hit, use the best paragraph inside that chapter by step 2/3 ranking, or the chapter's first paragraph.
+   - For a `SUMMARY` hit, use the best paragraph inside the summary's span: the best BM25 paragraph whose offsets fall in `char_start..char_end`, else the span's first paragraph. Then take that paragraph's closest phrase as above.
    - Unit text comes from the cached book text by offsets. Only the books in the results are loaded, and an LRU cache holds at most 2 books.
 6. Merge, remove duplicates by paragraph id with exact matches first, and return up to `k` hits.
 7. The `--json` CLI output is `Hit` serialized as is. This is the contract an LLM tool or MCP wrapper will use.
@@ -336,7 +410,9 @@ src/main/kotlin/rag/
   index/Indexer.kt            index + embed orchestration
   store/SqliteStore.kt        §7
   search/Searcher.kt          §8
-  summarize/Summarizer.kt     §5.7 (optional)
+  summarize/Summarizer.kt     §5.7 interface, OllamaSummarizer, prompts, output cleaning
+  summarize/SummaryTree.kt    §5.7.2 section packing and reduction (pure)
+  summarize/SummaryIndexer.kt §5.7.4–5.7.5 generation, storage, embedding, resume
 ```
 Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) free of PDFBox, SQL and HTTP, so it can be unit-tested on plain strings.
 
@@ -347,7 +423,12 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
 3. Paragraph + phrase segmentation, with the size cap.
 4. Unit keys + offsets-only SQLite store with contentless FTS; idempotent `index`, `--reindex`; paragraph embedding with Matryoshka truncation + int8/binary quantization (§5.6); resumable `rag embed`; CLI `index`, `embed`, `books`, `dump`.
 5. Search: exact path, FTS5 BM25, binary-then-int8 vector search, RRF fusion; `--mode`, `--json` output.
-6. *(Optional)* RAPTOR-style summaries (§5.7): `rag summarize`, summary vectors and FTS, `SUMMARY` hits.
+6. *(Optional)* RAPTOR-style summaries (§5.7):
+   1. `Summarizer` interface, `OllamaSummarizer`, `FakeSummarizer`; prompts `v1`; output cleaning.
+   2. Section packing and the summary tree (sections → groups → chapter → book), resumable, with schema version 2.
+   3. Summary embedding + `summary_fts`; `rag summarize`, `rag dump --summaries`.
+   4. `SUMMARY` hits in search, `--no-summaries`.
+   5. Real-book run: measure time and size, and record them in §13.
 
 ## 11. Acceptance criteria
 
@@ -390,12 +471,29 @@ Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) 
     |---|---|
     | float 256 | 0.77 |
     | int8 256, full scan | ≈ float 256 |
-    | binary → int8 256 (default) | **0.74** |
+    | binary → int8 256 | 0.74 |
     | float 512 | 0.85 |
-    | binary → int8 512 | 0.83 |
+    | binary → int8 512 (**default**) | 0.83 (0.84 after footnote cleanup) |
 
-    The loss comes almost entirely from Matryoshka truncation (client-side, after Ollama's normalization); int8 adds none and the binary pass about 0.03. The test floor is 0.70 at the default dimension. The original 0.9 target was not met by either dimension. Overlap with float search is a proxy: recall against known answers (the evaluation set below) decides the default dimension.
-- The DB file for the book is at most **2.5 MB** (§13).
+    The loss comes almost entirely from Matryoshka truncation (client-side, after Ollama's normalization); int8 adds none and the binary pass about 0.03. **Decision:** 512 dimensions, which costs about 0.5 MB more disk and 53 KB more RAM per book than 256. The test floor is 0.80. The original 0.9 target was not met by either dimension. Overlap with float search is a proxy: the evaluation set below measures recall against known answers.
+- The DB file for the book is at most **3 MB** (§13).
+- No footnote lines or footnote markers are left (35 URL footnotes; e.g. no `Birch1`).
+
+**Phase 6, summaries** (`FakeSummarizer`, which returns the first sentence of each input, so tests are deterministic and need no model):
+- **Packing:** sections are at most 1,500 tokens and never cross chapters, a code paragraph contributes at most 15 lines, and a one-section chapter has no separate section summary.
+- **Reduction:** 30 section summaries of 150 words each → one group level of 3 groups → one chapter summary.
+- **Output cleaning:** a preamble ("Here is a summary:") is stripped, a 300-word output is cut at a sentence end at or under the cap, and an empty output is retried and then fails with exit code 5.
+- **Spans:** every summary's span lies inside its chapter, a chapter summary's span covers the whole chapter, and the book summary covers chapters 1…n.
+- **Resume:** a summarizer that fails after 5 calls leaves `summary_status = 'partial'`; running `summarize` again makes only the missing summaries (count calls) and ends `complete`.
+- **Invalidation:** `--redo` or a different model replaces all summaries, `--reindex` removes them, and no `summary_fts` rows are orphaned.
+- **Search:** with summaries, a query naming a chapter's topic returns a `SUMMARY` hit with the summary text, its chapter and a paragraph inside the span. At most 2 `SUMMARY` hits are returned. `--no-summaries` returns none. Exact hits still come first.
+
+**Phase 6 on the real book** (tags `book` + `ollama`, plus `RAG_SUMMARY_MODEL` pulled):
+- There are 8 chapter summaries (front matter has none) and 1 book summary, each within its word cap.
+- **Grounding:** at least 95% of the CamelCase identifiers in all summaries (e.g. `SlotTable`, `LaunchedEffect`) appear in the book text. This is a cheap check for invented API names.
+- "what is the state snapshot system chapter about" → a `SUMMARY` hit for "5. State snapshot system" in the top 3.
+- "what does this book cover" → the book summary in the top 3.
+- Time, the number of model calls, and the summary storage size are recorded in §13.
 
 **Fixture book** (a public-domain PDF in `src/test/resources`, e.g. from Project Gutenberg) plus `eval.jsonl` with **20** lines of `{query, expectedPdfPage, expectedChapter}`. At least 8 of the queries must be **paraphrases** that share no content words with the target paragraph. Run with the `ollama` tag:
 - `hybrid` recall@5 (the expected page is within some hit's page range) ≥ **0.85**.
@@ -425,18 +523,21 @@ It was over in a minute.
 
 ## 13. Memory budget
 
-Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,663 paragraphs, 4,875 phrases.
+Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,649 paragraphs, 4,861 phrases (after footnote cleanup).
 
 | Part | Where it lives | Size |
 |---|---|---|
 | Book text (only copy) | disk; in RAM only while serving results from that book | ~374 KB |
 | Units (offsets, 64-bit hashes, no stored keys) + indexes | disk | ~560 KB |
 | FTS5 inverted indexes (contentless) | disk | ~450 KB |
-| Vectors, int8 + bits, 256 dims | disk; int8 read for ~100 candidates per query | ~608 KB |
-| Vectors, binary, 256 dims | **RAM** during search | 1,663 × 32 B ≈ **53 KB** |
-| **Whole DB file** | disk | **~2.35 MB** (measured) |
+| Vectors, int8 + bits, 512 dims | disk; int8 read for ~100 candidates per query | ~1.1 MB |
+| Vectors, binary, 512 dims | **RAM** during search | 1,649 × 64 B ≈ **106 KB** |
+| **Whole DB file** | disk | **~2.8 MB** (measured) |
+| Summaries, Phase 6: text + vectors | disk | ~120 KB (estimate) |
+| Summaries, Phase 6: binary vectors | **RAM** during search | ~5 KB (estimate) |
+| Summary model (`llama3.2:3b`) | RAM, only during `rag summarize` | ~2 GB |
 
-For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB). The embedding model (Ollama, ~270 MB) is the largest memory cost by far, and it's needed only while indexing and to embed each query.
+For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model (Ollama, ~270 MB) is the largest memory cost by far, and it's needed only while indexing and to embed each query.
 
 ## 14. Open questions (defaults apply unless changed)
 - Locale for sentence splitting: default `en`, set with `--locale`.
@@ -445,4 +546,4 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Store phrase vectors (instead of computing them at query time) if the cost of finding the closest phrase shows up in profiling. Deferred.
 - Nested sections (1.1) as their own level: deferred to v2.
 - Smaller embedding models for low-RAM machines: `all-minilm` (384 dims, ~45 MB), or static embeddings (model2vec), which need no transformer at query time. Deferred until the evaluation in §11 exists to compare them.
-- Matryoshka dimension: default 256. Drop to 128 if the §11 evaluation shows no loss.
+- Matryoshka dimension: default 512 (decided). Revisit 256 if the §11 evaluation shows recall equal to 512's.

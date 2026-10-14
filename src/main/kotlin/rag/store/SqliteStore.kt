@@ -63,6 +63,8 @@ class SqliteStore(path: String) : AutoCloseable {
             s.execute("PRAGMA foreign_keys = ON")
             s.execute("PRAGMA journal_mode = WAL")
             SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach(s::execute)
+            // SPEC §7: phases 1-5 are schema version 1; Phase 6 migrates to 2.
+            if (s.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } == 0) s.execute("PRAGMA user_version = $SCHEMA_VERSION")
         }
     }
 
@@ -295,6 +297,8 @@ class SqliteStore(path: String) : AutoCloseable {
     )
 
     companion object {
+        const val SCHEMA_VERSION = 1
+
         /** Unit hashes are 16 hex chars (64 bits); stored as INTEGER, half the size of the text. */
         fun hashToLong(hash: String): Long = java.lang.Long.parseUnsignedLong(hash, 16)
 
