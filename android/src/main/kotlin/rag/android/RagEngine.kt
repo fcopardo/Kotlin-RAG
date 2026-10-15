@@ -21,6 +21,7 @@ import rag.search.Searcher
 import rag.store.BookRow
 import rag.store.BundledSqlDriver
 import rag.store.SqliteStore
+import rag.summarize.BookSubject
 import java.io.Closeable
 import java.io.File
 import kotlin.coroutines.coroutineContext
@@ -66,11 +67,13 @@ class RagEngine(
         tocPages: Set<Int>? = null,
         reindex: Boolean = false,
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
+        /** False stores the structure only (keyword search works); [embed] adds vectors later. */
+        embed: Boolean = true,
         progress: Progress = Progress { _, _ -> },
     ): IndexResult = locked {
         val context = coroutineContext
         try {
-            indexer.index(file, tocPages, reindex, embedder, embedDim, locationSize) { done, total ->
+            indexer.index(file, tocPages, reindex, embedder.takeIf { embed }, embedDim, locationSize) { done, total ->
                 context.ensureActive()
                 progress.onBatch(done, total)
             }
@@ -100,6 +103,9 @@ class RagEngine(
     }
 
     suspend fun books(): List<BookRow> = locked { store.books() }
+
+    /** What a book is about: its file's subjects, plus any from `rag subjects` on the desktop (SPEC §8.5). */
+    suspend fun subjects(bookId: Long): List<BookSubject> = locked { store.subjects(bookId) }
 
     suspend fun deleteBook(bookId: Long) = locked { store.deleteBook(bookId).also { searcher = null } }
 

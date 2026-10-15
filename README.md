@@ -342,12 +342,20 @@ cli/                the `rag` command
 integration-tests/  end-to-end tests, fixture EPUBs, evaluation sets, Android goldens
 pdf-pdfbox-android/ PDF books on Android (PdfBox-Android; sources generated from pdf-pdfbox)
 android/            the Android library: RagEngine (minSdk 26)
+samples/android-app a standalone app using the published library (its own Gradle build)
 ```
+
+Libraries publish as `rag:<module>:0.1.0` (`./gradlew publishToMavenLocal`). They target Kotlin 2.2
+so apps on AGP 9's built-in Kotlin can use them.
 
 The core has no dependency on PDFBox, jsoup, SQLite drivers or HTTP; format readers and drivers
 plug in through `META-INF/services`.
 
 ### Android
+
+**To add this to an app, follow [docs/ANDROID.md](docs/ANDROID.md)**: Gradle setup, model files,
+background indexing, search, shipping a desktop-built database, and a sample app
+([samples/android-app](samples/android-app)). In short:
 
 `RagEngine` indexes and searches on the device with the same index format as the desktop, so a
 `.db` built with `rag index` can be copied to a phone and searched there:

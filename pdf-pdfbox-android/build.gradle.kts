@@ -3,6 +3,7 @@
 // so the two readers can't drift apart. Callers must run PDFBoxResourceLoader.init(context) first.
 plugins {
     id("com.android.library")
+    `maven-publish`
 }
 
 android {
@@ -10,6 +11,10 @@ android {
     compileSdk = 35
     defaultConfig {
         minSdk = 26
+        consumerProguardFiles("consumer-rules.pro")
+    }
+    publishing {
+        singleVariant("release") { withSourcesJar() }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
@@ -19,6 +24,12 @@ android {
 
 kotlin {
     jvmToolchain(21)
+    // Readable by apps on Kotlin 2.2+ (AGP 9's built-in Kotlin), like the JVM modules (root build).
+    coreLibrariesVersion = "2.2.21"
+    compilerOptions {
+        languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
+        apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
+    }
 }
 
 dependencies {
@@ -64,5 +75,12 @@ androidComponents {
     onVariants { variant ->
         variant.sources.kotlin?.addGeneratedSourceDirectory(portPdfBox, PortPdfBox::kotlinOut)
         variant.sources.resources?.addGeneratedSourceDirectory(portPdfBox, PortPdfBox::resourcesOut)
+    }
+}
+
+// Published as rag:${project.name} with the library's other modules (docs/ANDROID.md).
+afterEvaluate {
+    publishing {
+        publications.create<MavenPublication>("release") { from(components["release"]) }
     }
 }

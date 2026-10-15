@@ -96,6 +96,9 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     init {
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA journal_mode = WAL")
+        // Another connection writing (e.g. an app's indexing worker while its UI searches): wait for
+        // it instead of failing with SQLITE_BUSY.
+        db.execute("PRAGMA busy_timeout = 10000")
         SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
         migrate()
         // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;

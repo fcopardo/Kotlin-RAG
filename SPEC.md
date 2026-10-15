@@ -839,6 +839,21 @@ Vectors are comparable only if they come from the same model weights and the sam
 - **Cancellation:** ✅ cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it, embedding only the rest.
 
 
+### 15.10 Integration into apps (built 2026-10-15)
+Guide: `docs/ANDROID.md`. Verified with `samples/android-app`, a standalone build that uses the library only through Maven coordinates, as a minified release on the S25. That build found four problems, all fixed in the library:
+
+- **Kotlin version:** AGP 9's built-in Kotlin is 2.2 and couldn't read 2.4 metadata. The libraries now target Kotlin 2.2 (`languageVersion`/`apiVersion` 2.2, stdlib 2.2.21) while building with 2.4.
+- **R8 crash:** ONNX Runtime's JNI looks up its classes by name, and its AAR only keeps the telemetry ones, so the minified app crashed on the first embedding. `android/consumer-rules.pro` keeps `ai.onnxruntime.**`.
+- **R8 missing class:** PdfBox-Android references an optional JPEG 2000 decoder. `pdf-pdfbox-android/consumer-rules.pro` adds `-dontwarn`.
+- **Two connections to one DB** (an app's worker and UI) failed with `SQLITE_BUSY`. `busy_timeout` is now 10 s.
+
+Also added:
+- **Publishing:** every library module publishes as `rag:<module>:0.1.0`, test fixtures excluded, `onnxruntime-android` as an `api` dependency.
+- **`OnnxEmbedder` loads its model on first use**, so indexing reads a book before the model takes memory.
+- **`RagEngine.index(…, embed = false)`** stores structure only; **`RagEngine.subjects(bookId)`** lists a book's subjects.
+
+The release APK is 41 MB with arm64 only. The cold first search takes ~600 ms, including loading the model.
+
 ### 15.9 Device tiers: the model by RAM (step 7, decided 2026-10-15)
 Phones with 6 GB of RAM or more keep `mxbai-embed-large`. Smaller phones use a smaller model.
 

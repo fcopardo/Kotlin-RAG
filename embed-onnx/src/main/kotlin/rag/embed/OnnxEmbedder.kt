@@ -34,7 +34,10 @@ class OnnxEmbedder(
 ) : Embedder, AutoCloseable {
 
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = env.createSession(modelFile.path, sessionOptions)
+    // Loaded on first use, not here: an app can create the embedder up front, and indexing still
+    // reads the book before the model takes its ~180–390 MB (SPEC §15.6).
+    private val lazySession = lazy { env.createSession(modelFile.path, sessionOptions) }
+    private val session: OrtSession by lazySession
 
     override val dim: Int by lazy { embed(listOf("dimension probe")).single().size }
 
@@ -79,5 +82,7 @@ class OnnxEmbedder(
         }
     }
 
-    override fun close() = session.close()
+    override fun close() {
+        if (lazySession.isInitialized()) session.close()
+    }
 }
