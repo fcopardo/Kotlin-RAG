@@ -4,6 +4,9 @@ import android.content.Context
 import rag.android.DeviceTier
 import rag.android.RagEngine
 import rag.android.RagModels
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import rag.index.Indexer
 import java.io.File
 
 /**
@@ -32,6 +35,21 @@ object RagLibrary {
     }
 
     fun booksDir(context: Context): File = File(context.getExternalFilesDir(null), "books").apply { mkdirs() }
+
+    /** Book file by content hash: the database knows each book's SHA-256, not where the file is. */
+    private val filesByHash = HashMap<String, File>()
+
+    /** The file of book [bookId] in the books folder, or null if it isn't on this device. */
+    suspend fun fileFor(context: Context, bookId: Long): File? {
+        val sha = engine(context).books().firstOrNull { it.id == bookId }?.fileSha256 ?: return null
+        filesByHash[sha]?.takeIf { it.isFile }?.let { return it }
+        return withContext(Dispatchers.IO) {
+            booksDir(context).listFiles().orEmpty().filter { it.isFile && it !in filesByHash.values }.forEach { f ->
+                filesByHash[Indexer.sha256(f)] = f
+            }
+            filesByHash[sha]
+        }
+    }
 
     fun engine(context: Context): RagEngine = engine ?: synchronized(this) {
         engine ?: create(context.applicationContext).also { engine = it }

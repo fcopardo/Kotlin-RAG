@@ -75,6 +75,19 @@ class RagEngineDeviceTest {
     }
 
     @Test
+    fun hitLocatorFindsPassagesInTheFiles() {
+        val locator = HitLocator(context)
+        // The sample book's "delta" paragraph is on PDF page 8: one line, inside the page.
+        val rects = locator.pdfHighlights(File(dir, "sample.pdf"), 8, "Text about delta on this page.")
+        assertEquals(1, rects.size, "$rects")
+        assertTrue(rects.all { it.left in 0f..1f && it.right in it.left..1f && it.top in 0f..1f && it.bottom in it.top..1f }, "$rects")
+        assertEquals(emptyList(), locator.pdfHighlights(File(dir, "sample.pdf"), 8, "Words that are nowhere in this book."))
+        // EPUB: the XHTML document of chapter I holds the line.
+        val document = locator.epubDocument(File(dir, "art-of-war-se.epub"), "All warfare is based on deception.")
+        assertTrue(document != null && document.endsWith("chapter-1.xhtml"), "$document")
+    }
+
+    @Test
     fun thisPhoneIsLargeTier() {
         // The S25 reports ~10.9 GiB; the tier rules themselves are unit-tested (RagModelsTest).
         val memory = RagModels.memory(context)

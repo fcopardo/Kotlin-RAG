@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var status: TextView
     private lateinit var results: TextView
+    private lateinit var resultList: LinearLayout
     private lateinit var query: EditText
     private lateinit var subject: EditText
 
@@ -52,7 +53,7 @@ class MainActivity : ComponentActivity() {
         i.getStringExtra("query")?.let { q ->
             query.setText(q)
             subject.setText(i.getStringExtra("subject").orEmpty())
-            search()
+            search(openResult = i.getIntExtra("openResult", -1).takeIf { it >= 0 })
         }
     }
 
@@ -95,35 +96,58 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun search() {
+    /** Searches, then lists the hits; tapping one opens the book there. `openResult` opens hit N (scripting). */
+    private fun search(openResult: Int? = null) {
         val q = query.text.toString().trim().takeIf { it.isNotEmpty() } ?: return
         val s = subject.text.toString().trim().takeIf { it.isNotEmpty() }
         lifecycleScope.launch {
-            val text = try {
+            resultList.removeAllViews()
+            try {
                 val started = System.nanoTime()
                 val hits = RagLibrary.engine(this@MainActivity).search(q, k = 5, subject = s)
                 val ms = (System.nanoTime() - started) / 1_000_000
-                "${hits.size} results in $ms ms\n\n" + hits.joinToString("\n\n", transform = ::format)
+                results.text = "${hits.size} results in $ms ms. Tap one to open the book there."
+                hits.forEach { hit -> resultList.addView(resultView(hit)) }
+                Log.i(TAG, "query '$q' subject '$s': ${results.text}\n" + hits.joinToString("\n") { citation(it) })
+                openResult?.let { n -> hits.getOrNull(n)?.let { open(it) } }
             } catch (e: RagException) {
-                "Search failed: ${e.message}"
+                results.text = "Search failed: ${e.message}"
             }
-            results.text = text
-            Log.i(TAG, "query '$q' subject '$s': $text")
         }
     }
 
-    private fun format(hit: Hit): String {
+    private fun citation(hit: Hit): String {
         val pages = hit.paragraph.pageStartLabel.let { start ->
             if (start == hit.paragraph.pageEndLabel) "p. $start" else "pp. $start–${hit.paragraph.pageEndLabel}"
         }
-        val where = "${hit.bookTitle} › ${hit.chapter.title}, $pages [${hit.matchType}]"
-        val body = hit.summary ?: hit.paragraph.text
-        return "$where\n${body.take(300)}"
+        return "${hit.bookTitle} › ${hit.chapter.title}, $pages"
+    }
+
+    private fun resultView(hit: Hit) = TextView(this).apply {
+        text = "${citation(hit)} [${hit.matchType}]\n${(hit.summary ?: hit.paragraph.text).take(300)}"
+        setPadding(0, 24, 0, 24)
+        isClickable = true
+        // The system's ripple, so a tap shows.
+        val ripple = android.util.TypedValue()
+        context.theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
+        setBackgroundResource(ripple.resourceId)
+        setOnClickListener { lifecycleScope.launch { open(hit) } }
+    }
+
+    private suspend fun open(hit: Hit) {
+        val file = RagLibrary.fileFor(this, hit.bookId)
+        if (file == null) {
+            results.text = "${hit.bookTitle} isn't in ${RagLibrary.booksDir(this)} on this device, so it can't be opened."
+            return
+        }
+        Log.i(TAG, "opening ${file.name} at ${citation(hit)}")
+        BookViewerActivity.open(this, file, hit, citation(hit))
     }
 
     private fun buildViews() {
         status = TextView(this)
-        results = TextView(this).apply { setTextIsSelectable(true) }
+        results = TextView(this)
+        resultList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         query = EditText(this).apply { hint = "Ask something about your books" }
         subject = EditText(this).apply { hint = "Subject filter (optional), e.g. android" }
         val pick = Button(this).apply { text = "Add a book (PDF or EPUB)"; setOnClickListener { pickBook.launch(arrayOf("application/pdf", "application/epub+zip")) } }
@@ -131,10 +155,10 @@ class MainActivity : ComponentActivity() {
         val go = Button(this).apply { text = "Search"; setOnClickListener { search() } }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 96, 48, 48)
-            listOf(status, pick, folder, query, subject, go, results).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+            setPadding(48, 24, 48, 48)
+            listOf(status, pick, folder, query, subject, go, results, resultList).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
         }
-        setContentView(ScrollView(this).apply { addView(column) })
+        setContentView(ScrollView(this).apply { addView(column) }.also(BookViewerActivity::padForSystemBars))
     }
 
     private companion object {

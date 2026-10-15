@@ -206,6 +206,33 @@ for (hit in hits) {
 - **Books embedded with another model** than the phone's are searched by keywords only, with a
   warning in logcat. §9 explains how one database can carry both tiers' vectors.
 
+### Open a result in its book
+
+`HitLocator` finds a hit in the book file, so the app can open the book there:
+
+```kotlin
+val locator = HitLocator(context)
+
+// PDF: the paragraph's lines on its page, as fractions of the page (0..1 from the top left).
+// Render the page with android.graphics.pdf.PdfRenderer and draw the rectangles over it.
+val rects: List<RectF> = locator.pdfHighlights(file, hit.paragraph.pageStart, hit.paragraph.text)
+
+// EPUB: the XHTML document (path inside the zip) that holds the passage. Show it in a WebView
+// that serves the zip's files, then highlight the passage with WebView.findAllAsync(...).
+val document: String? = locator.epubDocument(file, hit.paragraph.text)
+```
+
+- **Matching:** both match letters and digits only, so hyphenation, ligatures and spacing
+  differences between the stored text and the file don't break them.
+- **Threads:** both read the file, so call them off the main thread.
+- **Finding the file:** the database stores each book's SHA-256 (`BookRow.fileSha256`), not a path.
+  The sample finds the file by hashing the books it keeps (`RagLibrary.fileFor`).
+- **Full viewer:** `samples/android-app`'s `BookViewerActivity` is a complete one, in about 200
+  lines:
+  - **PDF:** the page rendered with the paragraph highlighted, and previous/next buttons.
+  - **EPUB:** the chapter's own XHTML, with CSS and images served from the zip, scrolled to the
+    passage and highlighted.
+
 ## 8. Subjects
 
 `engine.subjects(bookId)` lists what a book is about, each subject with a weight (main 1.0,
@@ -282,5 +309,11 @@ through `rag:android:0.1.0`, as an app would. The steps below assume you're in t
    adb shell "am start -S -n rag.sample/.MainActivity --es query 'what is the slot table' --es subject android"
    ```
 
-You can do the same from the screen: **Add a book** opens the system file picker, **Index the books
-folder** indexes what you pushed, and **Search** runs a query with an optional subject.
+You can do the same from the screen:
+- **Add a book** opens the system file picker.
+- **Index the books folder** indexes what you pushed.
+- **Search** runs a query with an optional subject.
+- **Tapping a result** opens the book there: a PDF at its page with the paragraph highlighted, an
+  EPUB at the passage.
+
+Add `--ei openResult 0` to the search command to open the first result directly.
