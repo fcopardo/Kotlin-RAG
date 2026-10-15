@@ -19,7 +19,8 @@ The full design, decisions and measurements are in [SPEC.md](SPEC.md).
 
 ## Requirements
 
-- **JDK 21 or later.** The Gradle wrapper is included, so no separate Gradle install is needed.
+- **JDK 21 or later** to run. Builds use a JDK 21 toolchain: an installed JDK 21, or one Gradle
+  downloads once. The Gradle wrapper is included, so no separate Gradle install is needed.
 - **Ollama** for embeddings (not needed for keyword-only search):
 
   ```bash
@@ -262,7 +263,9 @@ recall on the evaluation set; see SPEC.md §11.
 ## Development
 
 ```bash
-./gradlew test
+./gradlew test               # desktop SQLite driver (sqlite-jdbc)
+./gradlew testBundledSqlite  # the same tests on androidx's bundled SQLite, the Android driver
+./gradlew check              # both
 ```
 
 Unit tests run without Ollama or any real book. Two groups of extra tests are opt-in through

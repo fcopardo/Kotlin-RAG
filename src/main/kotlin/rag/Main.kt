@@ -281,6 +281,9 @@ fun main(args: Array<String>) {
     } catch (e: SQLException) {
         System.err.println("Database error: ${e.message}")
         4
+    } catch (e: androidx.sqlite.SQLiteException) {
+        System.err.println("Database error: ${e.message}")
+        4
     } catch (e: IllegalArgumentException) {
         System.err.println("Error: ${e.message}")
         2

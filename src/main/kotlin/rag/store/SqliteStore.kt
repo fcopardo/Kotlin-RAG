@@ -5,10 +5,6 @@ import rag.embed.QuantizedVector
 import rag.embed.Quantizer
 import rag.index.UnitKeys
 import rag.index.UnitKind
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.ResultSet
-import java.sql.Statement
 import java.time.Instant
 
 data class BookRow(
@@ -80,22 +76,21 @@ data class StoredVector(val unitId: Long, val scale: Float, val int8: ByteArray,
  * SQLite storage (SPEC §7). Text is stored once, in `book.text`; units hold offsets. The FTS5
  * tables are contentless: they index text without storing it.
  */
-class SqliteStore(path: String) : AutoCloseable {
+class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoCloseable {
 
-    val connection: Connection = DriverManager.getConnection("jdbc:sqlite:$path")
+    /** The SQL connection: JDBC on desktop, androidx bundled on Android (SPEC §15.2). */
+    val db: SqlConnection = driver.open(path)
 
     init {
-        connection.createStatement().use { s ->
-            s.execute("PRAGMA foreign_keys = ON")
-            s.execute("PRAGMA journal_mode = WAL")
-            SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach(s::execute)
-            migrate()
-            // SPEC §7: phases 1-5 are schema version 1; EPUB support (Phase 8) is version 2.
-            s.execute("PRAGMA user_version = $SCHEMA_VERSION")
-        }
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute("PRAGMA journal_mode = WAL")
+        SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
+        migrate()
+        // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3.
+        db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
-    override fun close() = connection.close()
+    override fun close() = db.close()
 
     /**
      * Version 1 → 2 (EPUB, SPEC §16.5): book format and page kind, page labels, `pdf_page` → `page_no`.
@@ -126,36 +121,43 @@ class SqliteStore(path: String) : AutoCloseable {
         }
     }
 
-    private fun columns(table: String): Set<String> = query("PRAGMA table_info($table)") { it.getString("name") }.toSet()
+    private fun columns(table: String): Set<String> = query("PRAGMA table_info($table)") { it.string("name")!! }.toSet()
 
     /** Display labels of a book's pages, in page order ("13", "xii", "loc 4"). */
     fun pageLabels(bookId: Long): List<String> =
-        query("SELECT label FROM page WHERE book_id = ? ORDER BY page_no", bookId) { it.getString(1) }
+        query("SELECT label FROM page WHERE book_id = ? ORDER BY page_no", bookId) { it.string(1)!! }
 
+    private var transactionDepth = 0
+
+    /** Runs [block] in a transaction; nested calls join the outer one. */
     fun <T> transaction(block: () -> T): T {
-        val wasAuto = connection.autoCommit
-        connection.autoCommit = false
+        if (transactionDepth > 0) {
+            transactionDepth++
+            try { return block() } finally { transactionDepth-- }
+        }
+        db.begin()
+        transactionDepth = 1
         try {
-            return block().also { connection.commit() }
+            return block().also { db.commit() }
         } catch (e: Throwable) {
-            connection.rollback()
+            db.rollback()
             throw e
         } finally {
-            connection.autoCommit = wasAuto
+            transactionDepth = 0
         }
     }
 
     // --- books ---
 
     fun findBookBySha(sha256: String): Long? =
-        query("SELECT id FROM book WHERE file_sha256 = ?", sha256) { it.getLong(1) }.firstOrNull()
+        query("SELECT id FROM book WHERE file_sha256 = ?", sha256) { it.long(1) }.firstOrNull()
 
     fun book(id: Long): BookRow? = query("SELECT * FROM book WHERE id = ?", id, mapper = ::bookRow).firstOrNull()
 
     fun books(): List<BookRow> = query("SELECT * FROM book ORDER BY id", mapper = ::bookRow)
 
     fun bookText(id: Long): String =
-        query("SELECT text FROM book WHERE id = ?", id) { it.getString(1) }.firstOrNull()
+        query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.firstOrNull()
             ?: throw IllegalArgumentException("no book with id $id")
 
     /** Inserts the book with its pages, units and FTS rows, replacing [replacing] if given. One transaction. */
@@ -183,35 +185,27 @@ class SqliteStore(path: String) : AutoCloseable {
         update("DELETE FROM book WHERE id = ?", id)
     }
 
+    /**
+     * Inserts the book's units with ids assigned here (one writer per database), so parents are
+     * known before their children are written and everything can go in batches on any driver.
+     */
     private fun insertUnits(bookId: Long, structured: StructuredBook) {
         val text = structured.book.text
         val records = UnitKeys.build(structured, bookId)
-        val ids = LongArray(records.size)
-        connection.prepareStatement(
-            """INSERT INTO unit(book_id, kind, hash, occurrence, chapter, parent_id, ordinal, char_start, char_end,
-               page_start, page_end, title, is_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            Statement.RETURN_GENERATED_KEYS,
-        ).use { unitInsert ->
-            connection.prepareStatement("INSERT INTO para_fts(rowid, text) VALUES (?, ?)").use { paraFts ->
-                connection.prepareStatement("INSERT INTO phrase_fts(rowid, text) VALUES (?, ?)").use { phraseFts ->
-                    records.forEachIndexed { i, r ->
-                        bind(unitInsert, bookId, r.kind.code.toString(), hashToLong(r.hash), r.occurrence, r.chapter, r.parentIndex?.let { ids[it] },
-                            r.ordinal, r.start, r.end, r.pageStart, r.pageEnd, r.title, if (r.isCode) 1 else 0)
-                        unitInsert.executeUpdate()
-                        ids[i] = unitInsert.generatedKeys.use { it.next(); it.getLong(1) }
-                        val fts = when (r.kind) {
-                            UnitKind.PARAGRAPH -> paraFts
-                            UnitKind.PHRASE -> phraseFts
-                            else -> null
-                        }
-                        if (fts != null) {
-                            bind(fts, ids[i], text.substring(r.start, r.end + 1))
-                            fts.executeUpdate()
-                        }
-                    }
-                }
-            }
-        }
+        val base = query("SELECT coalesce(max(id), 0) FROM unit") { it.long(1) }.first()
+        val ids = LongArray(records.size) { base + it + 1 }
+        batch(
+            """INSERT INTO unit(id, book_id, kind, hash, occurrence, chapter, parent_id, ordinal, char_start, char_end,
+               page_start, page_end, title, is_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            records.mapIndexed { i, r ->
+                listOf(ids[i], bookId, r.kind.code.toString(), hashToLong(r.hash), r.occurrence, r.chapter, r.parentIndex?.let { ids[it] },
+                    r.ordinal, r.start, r.end, r.pageStart, r.pageEnd, r.title, if (r.isCode) 1 else 0)
+            },
+        )
+        fun fts(kind: UnitKind) = records.indices.filter { records[it].kind == kind }
+            .map { i -> listOf(ids[i], text.substring(records[i].start, records[i].end + 1)) }
+        batch("INSERT INTO para_fts(rowid, text) VALUES (?, ?)", fts(UnitKind.PARAGRAPH))
+        batch("INSERT INTO phrase_fts(rowid, text) VALUES (?, ?)", fts(UnitKind.PHRASE))
     }
 
     // --- units ---
@@ -249,7 +243,7 @@ class SqliteStore(path: String) : AutoCloseable {
     /** Unit ids matching an FTS5 query, best BM25 first. [table] is `para_fts` or `phrase_fts`. */
     fun ftsMatch(table: String, matchQuery: String, limit: Int = 20): List<Long> {
         require(table in setOf("para_fts", "phrase_fts", "summary_fts")) { "unknown FTS table $table" }
-        return query("SELECT rowid FROM $table WHERE $table MATCH ? ORDER BY bm25($table) LIMIT ?", matchQuery, limit) { it.getLong(1) }
+        return query("SELECT rowid FROM $table WHERE $table MATCH ? ORDER BY bm25($table) LIMIT ?", matchQuery, limit) { it.long(1) }
     }
 
     /**
@@ -265,11 +259,11 @@ class SqliteStore(path: String) : AutoCloseable {
         val where = (listOf("$table MATCH ?") + filters).joinToString(" AND ")
         val args = listOfNotNull<Any>(matchQuery, bookId, parentId, limit).toTypedArray()
         return query("SELECT $table.rowid FROM $table JOIN unit u ON u.id = $table.rowid WHERE $where ORDER BY bm25($table) LIMIT ?", *args) {
-            it.getLong(1)
+            it.long(1)
         }
     }
 
-    fun count(table: String): Int = query("SELECT count(*) FROM $table") { it.getInt(1) }.first()
+    fun count(table: String): Int = query("SELECT count(*) FROM $table") { it.int(1) }.first()
 
     // --- embeddings ---
 
@@ -279,7 +273,7 @@ class SqliteStore(path: String) : AutoCloseable {
            LEFT JOIN embedding e ON e.unit_id = u.id
            WHERE u.book_id = ? AND u.kind = 'g' AND e.unit_id IS NULL ORDER BY u.id""",
         bookId,
-    ) { ParagraphToEmbed(it.getLong(1), longToHash(it.getLong(2)), it.getInt(3), it.getInt(4), it.getInt(5) == 1, it.getString(6) ?: "") }
+    ) { ParagraphToEmbed(it.long(1), longToHash(it.long(2)), it.int(3), it.int(4), it.int(5) == 1, it.string(6) ?: "") }
 
     /** Copies an existing embedding of the same text, model and dimension (SPEC §6.3). */
     fun copyEmbeddingByHash(unitId: Long, hash: String, model: String, dim: Int): Boolean = update(
@@ -307,13 +301,13 @@ class SqliteStore(path: String) : AutoCloseable {
     fun binaryVectors(bookId: Long): List<Pair<Long, LongArray>> = query(
         "SELECT e.unit_id, e.vec_bits FROM embedding e JOIN unit u ON u.id = e.unit_id WHERE u.book_id = ? ORDER BY e.unit_id",
         bookId,
-    ) { it.getLong(1) to Quantizer.blobToBits(it.getBytes(2)) }
+    ) { it.long(1) to Quantizer.blobToBits(it.bytes(2)) }
 
     fun vectors(unitIds: Collection<Long>): List<StoredVector> {
         if (unitIds.isEmpty()) return emptyList()
         val marks = unitIds.joinToString(",") { "?" }
         return query("SELECT unit_id, scale, vec_i8, vec_bits FROM embedding WHERE unit_id IN ($marks)", *unitIds.toTypedArray()) {
-            StoredVector(it.getLong(1), it.getFloat(2), it.getBytes(3), Quantizer.blobToBits(it.getBytes(4)))
+            StoredVector(it.long(1), it.float(2), it.bytes(3), Quantizer.blobToBits(it.bytes(4)))
         }
     }
 
@@ -366,13 +360,13 @@ class SqliteStore(path: String) : AutoCloseable {
 
     fun summaryBinaryVectors(bookId: Long): List<Pair<Long, LongArray>> = query(
         "SELECT id, vec_bits FROM summary WHERE book_id = ? AND vec_bits IS NOT NULL ORDER BY id", bookId,
-    ) { it.getLong(1) to Quantizer.blobToBits(it.getBytes(2)) }
+    ) { it.long(1) to Quantizer.blobToBits(it.bytes(2)) }
 
     fun summaryVectors(ids: Collection<Long>): List<StoredVector> {
         if (ids.isEmpty()) return emptyList()
         val marks = ids.joinToString(",") { "?" }
         return query("SELECT id, scale, vec_i8, vec_bits FROM summary WHERE id IN ($marks) AND vec_i8 IS NOT NULL", *ids.toTypedArray()) {
-            StoredVector(it.getLong(1), it.getFloat(2), it.getBytes(3), Quantizer.blobToBits(it.getBytes(4)))
+            StoredVector(it.long(1), it.float(2), it.bytes(3), Quantizer.blobToBits(it.bytes(4)))
         }
     }
 
@@ -381,14 +375,14 @@ class SqliteStore(path: String) : AutoCloseable {
         """SELECT summary_fts.rowid FROM summary_fts JOIN summary s ON s.id = summary_fts.rowid
            WHERE summary_fts MATCH ? AND s.book_id = ? ORDER BY bm25(summary_fts) LIMIT ?""",
         matchQuery, bookId, limit,
-    ) { it.getLong(1) }
+    ) { it.long(1) }
 
     /** Paragraph ids inside `[from, to]` matching an FTS5 query, best BM25 first. */
     fun paragraphsInSpan(matchQuery: String, bookId: Long, from: Int, to: Int, limit: Int = 1): List<Long> = query(
         """SELECT para_fts.rowid FROM para_fts JOIN unit u ON u.id = para_fts.rowid
            WHERE para_fts MATCH ? AND u.book_id = ? AND u.char_start >= ? AND u.char_end <= ? ORDER BY bm25(para_fts) LIMIT ?""",
         matchQuery, bookId, from, to, limit,
-    ) { it.getLong(1) }
+    ) { it.long(1) }
 
     /** The first paragraph that starts inside `[from, to]`. */
     fun firstParagraphInSpan(bookId: Long, from: Int, to: Int): StoredUnit? = query(
@@ -396,54 +390,33 @@ class SqliteStore(path: String) : AutoCloseable {
         bookId, from, to, mapper = ::storedUnit,
     ).firstOrNull()
 
-    private fun storedSummary(rs: ResultSet) = StoredSummary(
-        rs.getLong("id"), rs.getLong("book_id"), rs.getLong("unit_id"), rs.getString("level"), rs.getInt("depth"),
-        rs.getInt("ordinal"), rs.getInt("char_start"), rs.getInt("char_end"), rs.getInt("page_start"), rs.getInt("page_end"),
-        rs.getString("model"), rs.getString("prompt"), rs.getString("text"),
+    private fun storedSummary(r: SqlRow) = StoredSummary(
+        r.long("id"), r.long("book_id"), r.long("unit_id"), r.string("level")!!, r.int("depth"),
+        r.int("ordinal"), r.int("char_start"), r.int("char_end"), r.int("page_start"), r.int("page_end"),
+        r.string("model")!!, r.string("prompt")!!, r.string("text")!!,
     )
 
     // --- JDBC helpers ---
 
-    private fun bind(statement: java.sql.PreparedStatement, vararg args: Any?) {
-        args.forEachIndexed { i, a -> statement.setObject(i + 1, a) }
-    }
+    private fun <T> query(sql: String, vararg args: Any?, mapper: (SqlRow) -> T): List<T> = db.query(sql, args.toList(), mapper)
 
-    private fun <T> query(sql: String, vararg args: Any?, mapper: (ResultSet) -> T): List<T> =
-        connection.prepareStatement(sql).use { s ->
-            bind(s, *args)
-            s.executeQuery().use { rs -> buildList { while (rs.next()) add(mapper(rs)) } }
-        }
+    private fun update(sql: String, vararg args: Any?): Int = db.execute(sql, args.toList())
 
-    private fun update(sql: String, vararg args: Any?): Int =
-        connection.prepareStatement(sql).use { s -> bind(s, *args); s.executeUpdate() }
+    private fun insert(sql: String, vararg args: Any?): Long = db.insert(sql, args.toList())
 
-    private fun insert(sql: String, vararg args: Any?): Long =
-        connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { s ->
-            bind(s, *args)
-            s.executeUpdate()
-            s.generatedKeys.use { it.next(); it.getLong(1) }
-        }
+    private fun batch(sql: String, rows: List<List<Any?>>) = db.batch(sql, rows)
 
-    private fun batch(sql: String, rows: List<List<Any?>>) {
-        connection.prepareStatement(sql).use { s ->
-            rows.forEach { row -> bind(s, *row.toTypedArray()); s.addBatch() }
-            s.executeBatch()
-        }
-    }
-
-    private fun bookRow(rs: ResultSet) = BookRow(
-        rs.getLong("id"), rs.getString("file_sha256"), rs.getString("title"), rs.getString("chapter_strategy"),
-        rs.getObject("page_offset")?.let { (it as Number).toInt() }, rs.getString("embed_model"),
-        rs.getObject("embed_dim")?.let { (it as Number).toInt() }, rs.getString("embed_status"), rs.getString("created_at"),
-        rs.getString("format"), rs.getString("page_kind"),
-        rs.getString("summary_model"), rs.getString("summary_prompt"), rs.getString("summary_status"),
+    private fun bookRow(r: SqlRow) = BookRow(
+        r.long("id"), r.string("file_sha256")!!, r.string("title"), r.string("chapter_strategy")!!,
+        r.intOrNull("page_offset"), r.string("embed_model"), r.intOrNull("embed_dim"), r.string("embed_status")!!, r.string("created_at")!!,
+        r.string("format")!!, r.string("page_kind")!!,
+        r.string("summary_model"), r.string("summary_prompt"), r.string("summary_status")!!,
     )
 
-    private fun storedUnit(rs: ResultSet) = StoredUnit(
-        rs.getLong("id"), rs.getLong("book_id"), UnitKind.of(rs.getString("kind").single()), longToHash(rs.getLong("hash")),
-        rs.getInt("occurrence"), rs.getObject("chapter")?.let { (it as Number).toInt() },
-        rs.getObject("parent_id")?.let { (it as Number).toLong() }, rs.getInt("ordinal"), rs.getInt("char_start"),
-        rs.getInt("char_end"), rs.getInt("page_start"), rs.getInt("page_end"), rs.getString("title"), rs.getInt("is_code") == 1,
+    private fun storedUnit(r: SqlRow) = StoredUnit(
+        r.long("id"), r.long("book_id"), UnitKind.of(r.string("kind")!!.single()), longToHash(r.long("hash")),
+        r.int("occurrence"), r.intOrNull("chapter"), r.longOrNull("parent_id"), r.int("ordinal"), r.int("char_start"),
+        r.int("char_end"), r.int("page_start"), r.int("page_end"), r.string("title"), r.int("is_code") == 1,
     )
 
     companion object {

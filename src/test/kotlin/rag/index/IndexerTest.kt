@@ -68,14 +68,12 @@ class IndexerTest {
         // Contentless FTS returns NULL for its column but still matches.
         val hit = store.ftsMatch("para_fts", "\"about foxtrot\"").single()
         assertEquals("Text about foxtrot on this page.", store.unit(hit)!!.let { store.bookText(1).substring(it.start, it.end + 1) })
-        store.connection.createStatement().use { s ->
-            s.executeQuery("SELECT text FROM para_fts LIMIT 1").use { rs -> rs.next(); assertNull(rs.getString(1)) }
-        }
+        assertNull(store.db.query("SELECT text FROM para_fts LIMIT 1") { it.string(1) }.single())
     }
 
     @Test
     fun `a new database records schema version 1`() {
-        val version = store.connection.createStatement().use { s -> s.executeQuery("PRAGMA user_version").use { it.next(); it.getInt(1) } }
+        val version = store.db.query("PRAGMA user_version") { it.int(1) }.single()
 
         assertEquals(SqliteStore.SCHEMA_VERSION, version)
     }
@@ -193,14 +191,10 @@ class IndexerTest {
         assertTrue(store.vectors(store.units(bookId, UnitKind.PARAGRAPH).map { it.id }).all { it.int8.size == 64 })
     }
 
-    private fun tables(): List<String> = store.connection.createStatement().use { s ->
-        s.executeQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%' AND name NOT LIKE '%fts%'")
-            .use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
-    }
+    private fun tables(): List<String> =
+        store.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%' AND name NOT LIKE '%fts%'") { it.string(1)!! }
 
-    private fun columns(table: String): List<String> = store.connection.createStatement().use { s ->
-        s.executeQuery("PRAGMA table_info($table)").use { rs -> buildList { while (rs.next()) add(rs.getString("name")) } }
-    }
+    private fun columns(table: String): List<String> = store.db.query("PRAGMA table_info($table)") { it.string("name")!! }
 
     /** Embeds [okCalls] batches, then fails like an unreachable Ollama. */
     private class FailingAfter(private val okCalls: Int, private val delegate: Embedder) : Embedder by delegate {

@@ -655,7 +655,24 @@ Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and locati
 | Embeddings | `Embedder` (exists) | `OllamaEmbedder` (exists), `OnnxEmbedder` | `OnnxEmbedder`; `OllamaEmbedder` can also reach an Ollama server on the local network |
 | Summaries | `Summarizer` (§8.1) | `OllamaSummarizer` | not in Phase 7 |
 
-- **Storage, one implementation for both:** `androidx.sqlite`'s `BundledSQLiteDriver` ships its own SQLite on the JVM and on Android. That gives FTS5 and version ≥ 3.43 (`contentless_delete`) everywhere, including Android versions whose built-in SQLite lacks them. It replaces `sqlite-jdbc`; the SQL and schema stay the same.
+- **Storage: one store, two thin drivers** (decided 2026-10-14, step 2 built). `SqliteStore` holds all the SQL and logic over a small `SqlConnection` interface (query, execute, insert, batch, transactions, rows read by name or position):
+  - **Desktop: `sqlite-jdbc`** (default).
+  - **Android: `androidx.sqlite` with `BundledSQLiteDriver`.** It ships its own SQLite (3.50.1 in 2.7.1), so FTS5 and `contentless_delete` are available even where Android's built-in SQLite lacks them.
+  - **Why not androidx everywhere, as first planned:** its desktop build only ships native libraries for four platforms:
+
+    | Platform | androidx bundled 2.7.1 | sqlite-jdbc |
+    |---|---|---|
+    | macOS arm64 | ✅ | ✅ |
+    | macOS x86_64 (Intel Macs, or Intel JDKs under Rosetta) | ❌ | ✅ |
+    | Linux x64 / arm64 | ✅ | ✅ |
+    | Windows x64 | ✅ | ✅ |
+    | Windows arm64 | ❌ | ✅ |
+    | Android | ✅ | ❌ |
+
+  - The system property `rag.sql.driver=bundled` selects androidx on desktop. Gradle's `testBundledSqlite` task (part of `check`) runs the **whole test suite** on it.
+  - `DriverParityTest`: a file written by either driver reads identically with the other: books, units, summaries, page labels and search results.
+  - The store assigns unit ids itself and inserts in batches, instead of per-row generated keys, so writes behave the same on both drivers.
+- **Build JDK:** Gradle uses a **JDK 21 toolchain**, an installed one or one the Foojay resolver downloads once into Gradle's cache. The output still runs on any Java 21+. A native JDK matters for native libraries: on Apple silicon, an Intel JDK under Rosetta can't load androidx's arm64 SQLite.
 - **On-device embeddings with ONNX Runtime** (`onnxruntime` on the JVM, `onnxruntime-android`):
   - The model ships as an ONNX file, int8-quantized for phones.
   - Tokenization is BERT WordPiece, implemented in pure Kotlin from the model's `vocab.txt`, with no native tokenizer library.
@@ -695,8 +712,8 @@ Vectors are comparable only if they come from the same model weights and the sam
 - The phone default may differ from the desktop default. An index used on both must use one model (§15.4).
 
 ### 15.7 Steps (each ends with passing tests; the desktop CLI keeps working throughout)
-1. Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
-2. Replace `sqlite-jdbc` with `androidx.sqlite` + the bundled driver on desktop. Same schema; all tests pass, including real-book size and recall.
+1. ✅ Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
+2. ✅ The two-driver store (above). Real index files from before the change give identical evaluation output on both drivers (*Compose* with summaries 0.80, *Art of War* 0.75 / 0.65).
 3. Split the Gradle modules as in §15.3.
 4. Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model.
 5. Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests on an emulator.
@@ -704,7 +721,8 @@ Vectors are comparable only if they come from the same model weights and the sam
 
 ### 15.8 Acceptance criteria (Phase 7)
 - After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).
-- **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM and on an Android emulator.
+- **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM (✅ 3.50.1, the whole suite passes) and on an Android emulator.
+- **Driver parity:** ✅ files written by either driver read identically with the other; existing files answer the evaluation sets identically.
 - **WordPiece tokenizer:** the same token ids as the model's reference tokenizer on 100 sample sentences (fixture file), including code and punctuation.
 - **Parity:** `OnnxEmbedder` vs `OllamaEmbedder` for the default model, average cosine ≥ 0.99 on 50 paragraphs from the generated sample book. Evaluation-set recall within one question.
 - **Same file on both platforms:** a DB built by the desktop CLI and copied into an Android instrumented test opens without migration and returns the same lexical results for the evaluation set. With the parity-checked model, it also returns the same hybrid results within one question.
