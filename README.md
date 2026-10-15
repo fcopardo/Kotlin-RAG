@@ -351,6 +351,63 @@ so apps on AGP 9's built-in Kotlin can use them.
 The core has no dependency on PDFBox, jsoup, SQLite drivers or HTTP; format readers and drivers
 plug in through `META-INF/services`.
 
+### Agents (MCP and HTTP)
+
+For an agent, run a server instead of calling `rag search` each time. It keeps the database and
+caches warm, so searches take ~50–100 ms instead of seconds. Full reference: [docs/AGENTS.md](docs/AGENTS.md).
+
+```bash
+rag mcp --db books.db                 # Model Context Protocol over stdio
+rag serve --db books.db --port 8765   # JSON API on 127.0.0.1: /search, /books, /books/{id}/chapters
+```
+
+The MCP server offers four read-only tools to the model:
+- `search_books(query, k, subject, book_id, mode)`: passages with book, chapter and pages;
+- `list_books()`: titles and subjects;
+- `list_chapters(book_id)`;
+- `read_chapter(book_id, chapter, offset)`.
+
+**Step 1: build the launcher and index some books** (the server only reads):
+
+```bash
+./gradlew :cli:installDist                      # the launcher: cli/build/install/rag/bin/rag
+rag index --db books.db --file mybook.pdf       # repeat per book; `rag subjects` optionally
+```
+
+**Step 2: connect your agent.**
+
+- **Claude Code:** `claude mcp add books -- /abs/path/rag mcp --db /abs/path/books.db`.
+  - Start a new session, then ask about your books.
+  - `--scope local` keeps it private to you and this project; `--scope project` writes a shareable
+    `.mcp.json`.
+- **Claude Desktop and other MCP clients** (IDE assistants, agent frameworks with an MCP stdio
+  adapter): register a stdio server with command `/abs/path/rag` and arguments
+  `["mcp", "--db", "/abs/path/books.db"]`. [docs/AGENTS.md](docs/AGENTS.md) has the Claude Desktop
+  JSON and an example with Python's official `mcp` SDK.
+- **A plain Python agent, fully local:** [examples/python/local_agent.py](examples/python/local_agent.py)
+  is a working agent in ~100 lines with no dependencies (Python 3.9+). A model in Ollama answers and
+  calls the book tools through `rag mcp`:
+
+  ```bash
+  ollama pull llama3.2:3b                                     # any Ollama chat model with tool use
+  python3 examples/python/local_agent.py "What is the slot table in Jetpack Compose?"
+  ```
+
+  Set `RAG`, `RAG_DB`, `OLLAMA_URL` and `MODEL` to point it elsewhere. The loop is the same for any
+  model with tool calling, whether a local one or a cloud API:
+  1. start `rag mcp` and send `initialize`;
+  2. turn `tools/list` into the model's tool format: name, description, and `inputSchema` as the
+     parameters;
+  3. when the model asks for a tool, send `tools/call` and return the text result as a tool message;
+  4. repeat until the model answers.
+- **Agents that don't speak MCP:** call the HTTP API. `POST /search` with
+  `{"query": "…", "k": 5, "compact": true}` returns the same passages as the MCP tool.
+
+**Small local models** (3B) often answer from memory instead of calling a tool, and send arguments
+sloppily. The example therefore searches once with the user's question before the model's first turn
+and hands it the passages; the server reads `"null"` and `"10"` arguments as meant. Larger models
+(about 8B and up, or cloud models) can rely on the tools alone.
+
 ### Android
 
 **To add this to an app, follow [docs/ANDROID.md](docs/ANDROID.md)**: Gradle setup, model files,

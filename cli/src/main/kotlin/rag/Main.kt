@@ -37,7 +37,7 @@ import rag.store.SqliteStore
 import java.sql.SQLException
 import kotlin.system.exitProcess
 
-private fun CliktCommand.onnxDirOption() =
+internal fun CliktCommand.onnxDirOption() =
     option("--onnx-dir", help = "Embed with ONNX Runtime from this model directory instead of Ollama (e.g. models/nomic-embed-text-v1.5)")
         .file(mustExist = true, canBeFile = false)
 
@@ -45,7 +45,7 @@ private fun CliktCommand.onnxDirOption() =
  * Ollama, or with [onnxDir] the ONNX build phones use (SPEC §15.9). Models only built with ONNX
  * ("…@onnx-int8") need [onnxDir].
  */
-private fun embedderFor(model: String, ollamaUrl: String, onnxDir: java.io.File?): Embedder {
+internal fun embedderFor(model: String, ollamaUrl: String, onnxDir: java.io.File?): Embedder {
     if (onnxDir == null) {
         if ('@' in model) throw UsageError("'$model' vectors come from an ONNX build: pass --onnx-dir with its files")
         return OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
@@ -322,15 +322,49 @@ private class DumpCommand : CliktCommand(name = "dump") {
     }
 }
 
+/** Options shared by the long-running servers (`rag mcp`, `rag serve`). */
+private abstract class ServerCommand(name: String) : CliktCommand(name = name) {
+    val db by option("--db", help = "SQLite database file").required()
+    val embedModel by option("--embed-model", help = "Query model; by default the first model of the books searched")
+    val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
+    val onnxDir by onnxDirOption()
+
+    fun service(store: SqliteStore) = rag.server.RagService(store, { model -> embedderFor(model, ollamaUrl, onnxDir) }, embedModel)
+}
+
+private class McpCommand : ServerCommand("mcp") {
+    override fun help(context: Context) =
+        "Serve the books to agents over the Model Context Protocol (stdio): search_books, list_books, list_chapters, read_chapter."
+
+    override fun run() = SqliteStore(db).use { store ->
+        System.err.println("rag mcp: serving $db over stdio")
+        rag.server.McpServer(service(store), System.`in`.bufferedReader(), System.out.bufferedWriter()).run()
+    }
+}
+
+private class ServeCommand : ServerCommand("serve") {
+    override fun help(context: Context) = "Serve the books over a local HTTP JSON API: /search, /books, /books/{id}/chapters."
+    val host by option("--host", help = "Address to listen on; anything but localhost exposes your books to the network").default("127.0.0.1")
+    val port by option("--port").int().default(8765)
+
+    override fun run() = SqliteStore(db).use { store ->
+        rag.server.HttpApi(service(store), host, port).use { api ->
+            api.start()
+            echo("rag serve: http://$host:${api.port}/ (Ctrl-C to stop)")
+            Thread.currentThread().join()
+        }
+    }
+}
+
 /** "p. 13", "p. 13-15", "loc 3-loc 5" → shortened to "loc 3-5". */
-private fun citation(kind: String, start: String, end: String): String = when {
+internal fun citation(kind: String, start: String, end: String): String = when {
     kind == "location" -> if (start == end) start else "$start-${end.removePrefix("loc ")}"
     start == end -> "p. $start"
     else -> "p. $start-$end"
 }
 
 fun main(args: Array<String>) {
-    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), SubjectsCommand(), BooksCommand(), DumpCommand())
+    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), SubjectsCommand(), BooksCommand(), DumpCommand(), McpCommand(), ServeCommand())
     val exitCode = try {
         command.parse(args)
         0

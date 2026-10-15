@@ -1045,3 +1045,22 @@ Page numbers don't carry between a PDF and an EPUB edition, or between different
 - **Mixed database:** a PDF book and an EPUB book in one DB can each be searched alone (`--book`) and together; results show the right page labels for each.
 - **Migration:** a version-1 or version-2 database opens, migrates to version 3, and still answers the evaluation set with the same recall.
 - **Fixture books:** both committed EPUBs index without warnings, and the Standard Ebooks evaluation set is recorded with the unchanged settings. Its hybrid recall@5 is a floor test; the spec records the measured value rather than a target.
+
+## 17. Serving agents (built 2026-10-15)
+Two long-running front ends over one shared `RagService` (`cli/src/main/kotlin/rag/server`). Guide: `docs/AGENTS.md`.
+
+- **`rag mcp`:** a Model Context Protocol server over stdio (JSON-RPC 2.0, one message per line; protocol versions 2024-11-05, 2025-03-26 and 2025-06-18).
+  - Four read-only tools: `search_books`, `list_books`, `list_chapters`, `read_chapter`.
+  - Results come as `structuredContent` and as the same JSON in a text block.
+  - Tool failures are results with `isError`; protocol failures are JSON-RPC errors.
+- **`rag serve`:** a JSON API on the JDK's HTTP server, bound to 127.0.0.1 by default.
+  - Endpoints: `/health`, `/books`, `/books/{id}/chapters[/{n}]`, `/search` (GET or POST).
+  - `/search` returns full hits, the same contract as `rag search --json`, or compact passages.
+- **Shared service:**
+  - **One warm connection:** the `Searcher` caches stay between calls, with one `Searcher` per query model.
+  - **Query model:** `--embed-model`, or the most common primary model of the books in scope. Books without it are searched by keywords (`keywordsOnModelMismatch`).
+  - **Other processes' writes** (`rag index`, `rag embed`) change SQLite's `PRAGMA data_version`. The next call sees that and drops the caches.
+- **Passages** are the compact hit format for models: book, chapter, pages, match type, paragraph text, best sentence, and summary. Null fields are omitted.
+- **Measured** from Python (stdlib clients) on the 4-book library (~17k paragraphs) with mxbai through Ollama: the first search takes 0.6–1.2 s, later ones 49–97 ms, against ~1.4 s per `rag search` subprocess before embedding.
+- **Not in scope:** writing through the servers (indexing stays a CLI step), authentication (localhost only), and MCP resources and prompts.
+
