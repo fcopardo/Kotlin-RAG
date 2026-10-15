@@ -329,10 +329,13 @@ val hits = engine.search("attack by stratagem", k = 5)
 val embedder = OnnxEmbedder(modelFile, WordPieceTokenizer.fromVocabFile(vocab),
     EmbeddingModel.MXBAI_EMBED_LARGE, model = "mxbai-embed-large")
 RagEngine(context, dbFile, embedder).use { it.index(bookFile) { done, total -> /* progress */ } }
+embedder.close() // the engine doesn't close the embedder: it can be shared
 ```
 
 All functions are `suspend` and run on `Dispatchers.IO`. Cancelling `index` or `embed` stops
-between embedding batches, and `embed(bookId)` resumes later. Apps that depend on more than one
+between embedding batches, and `embed(bookId)` resumes later. To keep memory down, index
+with an engine that has no embedder, then load the model and call `embed`: reading a PDF and
+the model then don't need memory at the same time (SPEC.md §15.6). Apps that depend on more than one
 module should merge service files: `packaging.resources.merges += "META-INF/services/**"`.
 
 ## Status and roadmap
@@ -345,6 +348,8 @@ module should merge service files: `packaging.resources.merges += "META-INF/serv
   questions like "what is chapter 5 about?" can be answered (SPEC.md §5.7).
 - **Phase 7 (steps 1–5 done):** desktop and Android from one code base, sharing the same index
   file, with on-device embeddings through ONNX Runtime. The Android library passes its
-  instrumented tests on a phone. Next: measuring speed and memory on the phone (SPEC.md §15).
+  instrumented tests on a phone. On a Galaxy S25, a 205-page book indexes with on-device
+  embeddings in about 2.3 minutes, a query embeds in 25 ms, and recall matches the desktop.
+  Peak memory with the model loaded (~600 MB) is still over the 400 MB target (SPEC.md §15.6).
 - **Done (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
   table of contents and citations by printed page where the EPUB has a page list (SPEC.md §16).

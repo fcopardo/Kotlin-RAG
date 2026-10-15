@@ -23,11 +23,18 @@ class OnnxEmbedder(
     private val config: EmbeddingModel,
     override val model: String,
     private val pooling: Pooling = Pooling.CLS,
-    private val batchSize: Int = 8,
+    /**
+     * Texts per inference. 1 by default: the int8 model quantizes activations per batch, so padding
+     * to the longest text in a batch shifts the vectors (recall@5 0.80 → 0.75 at 8 on the phone) and
+     * wastes work (indexing took 248 s at 8, 125 s at 1). See SPEC §15.6.
+     */
+    private val batchSize: Int = 1,
+    /** E.g. to turn off the CPU memory arena, which keeps its peak size, on phones (SPEC §15.6). */
+    sessionOptions: OrtSession.SessionOptions = OrtSession.SessionOptions(),
 ) : Embedder, AutoCloseable {
 
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = env.createSession(modelFile.path, OrtSession.SessionOptions())
+    private val session: OrtSession = env.createSession(modelFile.path, sessionOptions)
 
     override val dim: Int by lazy { embed(listOf("dimension probe")).single().size }
 

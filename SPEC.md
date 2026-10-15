@@ -625,7 +625,8 @@ Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,649 paragr
 For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model is the largest memory cost by far: `mxbai-embed-large` takes ~687 MB in Ollama (`nomic-embed-text` ~370 MB), and it's needed only while indexing and to embed each query. Embedding the whole book takes 32 s with mxbai and 16 s with nomic.
 
 ## 14. Open questions (defaults apply unless changed)
-- Locale for sentence splitting: default `en`, set with `--locale`.
+- Locale: default `en`, set with `--locale`. Since Phase 7 step 5, sentence splitting uses fixed, language-neutral rules (§5.5), so the locale no longer changes it.
+- Phone embedding model (§15.6): `mxbai-embed-large` int8 meets the time and recall targets on the S25 but peaks at ≈ 600 MB, against a 400 MB target. Options: keep it on phones with ≥ 6 GB RAM, or evaluate `nomic-embed-text` / `embeddinggemma` int8 (needs downloading their ONNX files).
 - Heading lines are kept as separate one-line paragraphs, not merged into the next paragraph. Default: keep. They are still embedded, and the chapter-title prefix duplicates them, which is harmless.
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
@@ -729,13 +730,41 @@ Vectors are comparable only if they come from the same model weights and the sam
 - Each is measured on the evaluation set (§11) and on a reference mid-range phone. Targets: embedding a query in **< 300 ms**, indexing a 200-page book in **< 10 min** in the background, and peak app memory under **400 MB** during indexing.
 - The phone default may differ from the desktop default. An index used on both must use one model (§15.4).
 
+**Measured** (2026-10-15, step 6; `RagEngineBenchmark`, opt-in instrumented test):
+- **Device:** Galaxy S25 (SM8750, 8 cores, Android 16, 11 GB RAM). This is a flagship, not the mid-range reference phone, so treat the times as best case.
+- **Model and book:** `mxbai-embed-large` int8 ONNX (337 MB). *Jetpack Compose internals* PDF: 1,649 paragraphs, 1,598 distinct texts embedded.
+- **Process baseline:** the memory figures are process RSS (`VmRSS` / `VmHWM`), with a 122 MB baseline for the empty test process.
+
+| Measure | Result | Target |
+|---|---|---|
+| Read and split the book (PdfBox-Android, no model loaded) | 6.6 s, peak RSS 470 MB | |
+| Load the model | 0.9 s, +370 MB RSS | |
+| Embed one query | median 25 ms, p90 31 ms | < 300 ms ✅ |
+| Embed the book (ONNX batch 1) | 125 s, peak RSS 600 MB | |
+| Whole book, read + embed | ≈ 2.3 min | < 10 min ✅ |
+| Peak memory, model loaded | 580–600 MB | < 400 MB ❌ |
+| Search, lexical / hybrid | median 7 ms / 60 ms; the first hybrid query takes ~730 ms while the binary vectors load | |
+| recall@5 on the device index: lexical / vector / hybrid | 0.55 / 0.80 / 0.80 | same as desktop (Ollama: hybrid 0.80) ✅ |
+| DB size | 2.5 MB | |
+
+- **ONNX batch size matters for the int8 model.** At batch 8, recall dropped to 0.75 and indexing took 248 s. Batch 1 gives 0.80 in 125 s. Activations are quantized per batch and texts are padded to the longest one in the batch, so batching both shifts the vectors and wastes work. `OnnxEmbedder` now defaults to batch 1. The desktop parity results are unchanged at batch 1 (int8 average cosine 0.9973).
+- **ONNX Runtime's CPU arena** barely matters at batch 1 (peak 603 vs 581 MB, 125 vs 132 s). It stays on, the default.
+- **Two separate memory peaks:**
+  - **Parsing the PDF** costs about 350 MB above the baseline, with no model loaded.
+  - **The model** adds about 370 MB once loaded, plus about 30 MB of activations at batch 1.
+  - Loading the model only after the book is read keeps the two peaks apart (≈ 600 MB instead of ≈ 880 MB with the model loaded during parsing). `RagEngine` callers get this by indexing without an embedder, then calling `embed`.
+- **Memory target missed:** int8 `mxbai-embed-large` alone takes almost the whole 400 MB budget. Ways to meet it, none tried yet:
+  - A smaller model (`nomic-embed-text` int8 ≈ 140 MB, or `embeddinggemma`). It would need its own parity test and eval run, and an index shared with the desktop would have to use it too.
+  - Memory-mapping the model (ONNX Runtime's ORT format with `session.use_ort_model_bytes_directly`), so its pages are file-backed and can be reclaimed.
+  - Keyword-only or query-only use on the phone (§15.5 options 1–2). There the model is loaded only to embed queries, and indexing happens on the desktop.
+
 ### 15.7 Steps (each ends with passing tests; the desktop CLI keeps working throughout)
 1. ✅ Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
 2. ✅ The two-driver store (above). Real index files from before the change give identical evaluation output on both drivers (*Compose* with summaries 0.80, *Art of War* 0.75 / 0.65).
 3. ✅ Split the Gradle modules as in §15.3. All 207 tests pass, on both SQL drivers, with every opt-in test enabled.
 4. ✅ Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model. Done **before** step 3, because parity decides index compatibility between desktop and phone, while the module split is mechanical.
 5. ✅ Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests. They ran on a connected phone (Galaxy S25, Android 16 / API 36, arm64) rather than an emulator: `./gradlew :android:connectedDebugAndroidTest`. `:integration-tests:androidGoldens` builds the inputs and expected outputs on the desktop (the fixture books, a JDBC-built `desktop.db`, unit lines and lexical results), and the test APK packages them as assets.
-6. Measure the reference-phone numbers from §15.6, record them, and choose the phone model.
+6. ✅ (measured; model choice pending) Measure the reference-phone numbers from §15.6 and record them. On the S25, `mxbai-embed-large` int8 meets the time and recall targets but not the memory one. Whether to stay with it on phones or evaluate a smaller model is open (§14).
 
 ### 15.8 Acceptance criteria (Phase 7)
 - After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).

@@ -32,7 +32,7 @@ import kotlin.coroutines.coroutineContext
  * Embedding can be cancelled between batches: the book stays `partial` and [embed] resumes it.
  * Reading and splitting a book (before embedding) runs to completion once started.
  *
- * @param embedder for vector search; null gives keyword-only indexes and search.
+ * @param embedder for vector search; null gives keyword-only indexes and search. Not closed by [close].
  */
 class RagEngine(
     context: Context,
@@ -97,10 +97,8 @@ class RagEngine(
 
     suspend fun deleteBook(bookId: Long) = locked { store.deleteBook(bookId).also { searcher = null } }
 
-    override fun close() {
-        store.close()
-        (embedder as? AutoCloseable)?.close()
-    }
+    /** Closes the database. The [embedder] belongs to the caller, who closes it (it may be shared). */
+    override fun close() = store.close()
 
     private suspend fun <T> locked(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }
 

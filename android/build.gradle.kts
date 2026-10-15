@@ -39,12 +39,15 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation(kotlin("test-junit"))
+    androidTestImplementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
 }
 
 androidComponents {
     onVariants { variant ->
         variant.deviceTests.values.forEach {
             it.sources.assets?.addStaticSourceDirectory(rootProject.file("integration-tests/build/androidGoldens").path)
+            // Evaluation sets for the opt-in benchmark (RagEngineBenchmark), under eval/.
+            it.sources.assets?.addStaticSourceDirectory(rootProject.file("integration-tests/src/test/resources").path)
         }
     }
 }
