@@ -42,7 +42,8 @@ The original spec used "index" for two different things. Use these terms instead
 
 ## 3. Tech stack
 
-- Kotlin 2.x, JVM 21, Gradle with the Kotlin DSL.
+- Kotlin 2.x, JVM 21, Gradle 9.8 with the Kotlin DSL. The Gradle daemon is pinned to JDK 21 too (`gradle/gradle-daemon-jvm.properties`), so a native arm64 JDK runs the build even when the system default is an Intel JDK.
+- Android (Phase 7): Android Gradle Plugin 9.4, `compileSdk` 35, `minSdk` 26.
 - Apache PDFBox **3.0.x**, for text extraction and the outline.
 - `jsoup`, for EPUB's XHTML (Phase 8). It tolerates imperfect markup and runs on Android too. Zip reading uses `java.util.zip` from the JDK.
 - `org.xerial:sqlite-jdbc` **3.43 or later**. It bundles FTS5, and 3.43 is the first version with `contentless_delete`.
@@ -149,7 +150,8 @@ Only one level of chapters is supported in v1. Nested entries (`1.1 …`) are tr
 - Empty paragraphs (only whitespace) are dropped.
 
 ### 5.5 Phrases
-- Split each paragraph with `java.text.BreakIterator.getSentenceInstance(locale)`. Then rejoin splits after common abbreviations (`Dr.`, `e.g.`, `Fig.` …) and single initials (`J.`), because the JDK iterator has no abbreviation handling. A period followed by a lowercase word isn't a sentence end.
+- Split each paragraph into sentences with fixed rules: a sentence ends at `.`, `?`, `!` or `…` (plus any closing quotes or brackets), followed by whitespace and then an uppercase letter, a digit or an opening quote or bracket. Then rejoin splits after common abbreviations (`Dr.`, `e.g.`, `Fig.` …) and single initials (`J.`). A period followed by a lowercase word isn't a sentence end.
+  - Not `java.text.BreakIterator` (used until Phase 7, step 5): the JDK's and Android's (ICU) versions split differently in both directions. For example, the JDK splits "R.G. in the hope" and doesn't split before "(2) He is"; ICU does the opposite. The rules above are pure Kotlin, so a book gets the same phrases, and so the same unit keys, on both platforms.
 - A phrase includes its ending punctuation (`.`, `?`, `!`, and any closing quote or bracket) and has its outer whitespace trimmed.
 - **A phrase never crosses a paragraph boundary.** If a sentence spans a paragraph break, the break wins.
 - A paragraph with no sentence terminator is one phrase.
@@ -637,14 +639,16 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Smaller embedding models for low-RAM machines: `all-minilm` (384 dims, ~45 MB), or static embeddings (model2vec), which need no transformer at query time. Deferred until the evaluation in §11 exists to compare them.
 - Matryoshka dimension: default 512 (decided). Revisit 256 if the §11 evaluation shows recall equal to 512's.
 
-## 15. Portability: desktop and Android (Phase 7, planned)
+## 15. Portability: desktop and Android (Phase 7, steps 1–5 done)
 
 **Goal.** One code base serves the desktop CLI and an Android library, with the same database format, so an index can be built on either side and searched on either side.
 
 **Non-goals for Phase 7:** iOS; an Android UI (the deliverable is a library plus a small sample); generating summaries on the device (summaries built on desktop are stored in the DB and used as they are).
 
 ### 15.1 What is already portable
-Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and location, chapter boundaries, segmentation, unit keys, quantization, fusion and evaluation are pure Kotlin using only JDK APIs that Android also has (`java.text`, `java.security.MessageDigest`, `java.nio`). They move into `core` unchanged. On Android, `android.icu.text.BreakIterator` replaces `java.text.BreakIterator` behind a small `SentenceSplitter` seam.
+Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and location, chapter boundaries, segmentation, unit keys, quantization, fusion and evaluation are pure Kotlin using only JDK APIs that Android also has (`java.text`, `java.security.MessageDigest`, `java.nio`). They moved into `core` unchanged, with two exceptions found on the device (step 5):
+- `InputStream.readNBytes` / `readAllBytes` are API 33 on Android; Kotlin's `readBytes()` replaces them.
+- Sentence splitting no longer uses `BreakIterator`, whose JDK and ICU versions disagree (§5.5).
 
 ### 15.2 What becomes pluggable
 
@@ -692,12 +696,13 @@ Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and locati
 | `embed-onnx` | `OnnxEmbedder`, `WordPieceTokenizer` | ONNX Runtime, **compile-only** | yes, with `onnxruntime-android` |
 | `cli` | the `rag` command | all desktop modules, clikt | no |
 | `integration-tests` | tests combining modules, fixture EPUBs, evaluation sets; `testBundledSqlite` | everything | no |
-| `pdf-pdfbox-android`, `android` | step 5 | | |
+| `pdf-pdfbox-android` | no hand-written code: a Gradle task generates its sources from `pdf-pdfbox`, moving `org.apache.pdfbox` to `com.tom_roush.pdfbox` and `Loader.loadPDF` to `PDDocument.load` (the 2.0 API), so the two readers can't drift apart | PdfBox-Android 2.0.27.0 | Android library |
+| `android` | `RagEngine`; instrumented tests | everything above that runs on Android, `onnxruntime-android`, coroutines | Android library (minSdk 26) |
 
-- **Plugins via `ServiceLoader`:** format and driver modules register their `BookSource` / `SqlDriver` in `META-INF/services`. `BookReader()` and `SqlDriver.default()` use whatever is on the classpath, so the core never depends on PDFBox, jsoup or a SQLite driver. On Android, R8 must keep those service entries.
+- **Plugins via `ServiceLoader`:** format and driver modules register their `BookSource` / `SqlDriver` in `META-INF/services`. `BookReader()` and `SqlDriver.default()` use whatever is on the classpath, so the core never depends on PDFBox, jsoup or a SQLite driver. On Android, `RagEngine` passes its sources and driver explicitly instead, so it doesn't depend on R8 keeping the service entries. The APK still has to merge the service files (`packaging.resources.merges += "META-INF/services/**"`), since two modules register a `BookSource`.
 - **Extractor ids:** each `BookSource` reports its own (`pdfbox-3.0.8/norm-v1`, `jsoup-1.23.2/norm-v1`). Before the split, EPUBs were recorded with PDFBox's version.
 
-`RagEngine` (Android) exposes `suspend` functions (`index`, `embed`, `search`) and runs blocking work on `Dispatchers.IO`. It reports progress per page and per batch, and checks for cancellation between batches. That fits `WorkManager` for indexing in the background.
+`RagEngine` (Android) exposes `suspend` functions (`index`, `embed`, `search`, `books`, `deleteBook`). It runs blocking work on `Dispatchers.IO`, one call at a time (one SQLite connection). It reports progress per embedding batch, and checks for cancellation between batches through `Indexer`'s `onBatch` hook. Reading and splitting a book isn't interruptible once started. That fits `WorkManager` for indexing in the background. `PDFBoxResourceLoader.init` runs in its constructor.
 
 ### 15.4 Model identity across runtimes
 Vectors are comparable only if they come from the same model weights and the same pooling. Ollama (GGUF) and ONNX builds of one model can differ slightly in numbers.
@@ -729,18 +734,18 @@ Vectors are comparable only if they come from the same model weights and the sam
 2. ✅ The two-driver store (above). Real index files from before the change give identical evaluation output on both drivers (*Compose* with summaries 0.80, *Art of War* 0.75 / 0.65).
 3. ✅ Split the Gradle modules as in §15.3. All 207 tests pass, on both SQL drivers, with every opt-in test enabled.
 4. ✅ Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model. Done **before** step 3, because parity decides index compatibility between desktop and phone, while the module split is mechanical.
-5. Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests on an emulator.
+5. ✅ Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests. They ran on a connected phone (Galaxy S25, Android 16 / API 36, arm64) rather than an emulator: `./gradlew :android:connectedDebugAndroidTest`. `:integration-tests:androidGoldens` builds the inputs and expected outputs on the desktop (the fixture books, a JDBC-built `desktop.db`, unit lines and lexical results), and the test APK packages them as assets.
 6. Measure the reference-phone numbers from §15.6, record them, and choose the phone model.
 
 ### 15.8 Acceptance criteria (Phase 7)
 - After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).
-- **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM (✅ 3.50.1, the whole suite passes) and on an Android emulator.
+- **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM (✅ 3.50.1, the whole suite passes) and on Android (✅ on the device, with `ENABLE_FTS5` in `compile_options`).
 - **Driver parity:** ✅ files written by either driver read identically with the other; existing files answer the evaluation sets identically.
 - **WordPiece tokenizer:** ✅ BERT's own reference example (`unaffable` → `una ##ffa ##ble`) plus algorithm tests on a tiny vocabulary: lowercasing, accent stripping, punctuation, CJK, `[UNK]`, truncation to 512. The planned 100-sentence reference fixture wasn't built: no reference tokenizer is installed here, and the cosine parity below (1.0000 for fp32) can't happen with wrong token ids. It covers the same risk.
 - **Parity:** ✅ `OnnxEmbedder` vs `OllamaEmbedder` for the default model: average cosine 1.0000 (fp32) and 0.997 (int8) on 50 real paragraphs (the committed *Art of War* fixture rather than the generated sample book, whose text is too repetitive). Evaluation-set recall identical (§15.4).
-- **Same file on both platforms:** a DB built by the desktop CLI and copied into an Android instrumented test opens without migration and returns the same lexical results for the evaluation set. With the parity-checked model, it also returns the same hybrid results within one question.
-- **Indexing on Android:** the generated 12-page sample book (§11) indexes on an emulator with the same chapters, paragraph count and unit keys as on desktop.
-- **Cancellation:** cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it.
+- **Same file on both platforms:** ✅ (lexical) a DB built by the desktop CLI and copied into an Android instrumented test opens without migration and returns the same lexical results (book and paragraph key of the top 5, six queries over three books). With the parity-checked model, it also returns the same hybrid results within one question.
+- **Indexing on Android:** ✅ the generated sample book (§11) and both *Art of War* EPUBs index on the device with the same book text, chapters, strategy, and every unit line (key, kind, offsets, pages, title) as on the desktop. The lexical results also match. Hybrid search on the device waits for step 6, which needs the ONNX model on the phone.
+- **Cancellation:** ✅ cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it, embedding only the rest.
 
 
 ## 16. EPUB input (Phase 8, done)

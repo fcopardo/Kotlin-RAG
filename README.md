@@ -268,6 +268,16 @@ recall on the evaluation set; see SPEC.md §11.
 ./gradlew check              # both
 ```
 
+The Android modules need the Android SDK: set `sdk.dir` in `local.properties` (not committed) or
+`ANDROID_HOME`. Their instrumented tests run on a connected phone or a running emulator:
+
+```bash
+./gradlew :android:connectedDebugAndroidTest
+```
+
+They compare against goldens the desktop builds first (`:integration-tests:androidGoldens`, run
+automatically): the same books must give the same units, and a desktop-built DB the same results.
+
 Unit tests run without Ollama or any real book. Two groups of extra tests are opt-in through
 environment variables:
 
@@ -280,7 +290,7 @@ environment variables:
 | `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
 
 The EPUB tests use two public-domain editions of *The Art of War* committed in
-[src/test/resources/epub/](src/test/resources/epub/) (sources and licenses in its README), so they run anywhere;
+[integration-tests/src/test/resources/epub/](integration-tests/src/test/resources/epub/) (sources and licenses in its README), so they run anywhere;
 their evaluation needs `RAG_OLLAMA=1`.
 
 ```bash
@@ -298,11 +308,32 @@ store-bundled/      SQLite driver for Android (androidx bundled)
 embed-ollama/       embeddings and summaries through Ollama
 embed-onnx/         in-process embeddings (ONNX Runtime) + WordPiece tokenizer
 cli/                the `rag` command
-integration-tests/  end-to-end tests, fixture EPUBs, evaluation sets
+integration-tests/  end-to-end tests, fixture EPUBs, evaluation sets, Android goldens
+pdf-pdfbox-android/ PDF books on Android (PdfBox-Android; sources generated from pdf-pdfbox)
+android/            the Android library: RagEngine (minSdk 26)
 ```
 
 The core has no dependency on PDFBox, jsoup, SQLite drivers or HTTP; format readers and drivers
 plug in through `META-INF/services`.
+
+### Android
+
+`RagEngine` indexes and searches on the device with the same index format as the desktop, so a
+`.db` built with `rag index` can be copied to a phone and searched there:
+
+```kotlin
+val engine = RagEngine(context, File(context.filesDir, "books.db"))      // keyword search only
+val hits = engine.search("attack by stratagem", k = 5)
+
+// With on-device embeddings (an ONNX model that passed the parity test, SPEC.md §15.4):
+val embedder = OnnxEmbedder(modelFile, WordPieceTokenizer.fromVocabFile(vocab),
+    EmbeddingModel.MXBAI_EMBED_LARGE, model = "mxbai-embed-large")
+RagEngine(context, dbFile, embedder).use { it.index(bookFile) { done, total -> /* progress */ } }
+```
+
+All functions are `suspend` and run on `Dispatchers.IO`. Cancelling `index` or `embed` stops
+between embedding batches, and `embed(bookId)` resumes later. Apps that depend on more than one
+module should merge service files: `packaging.resources.merges += "META-INF/services/**"`.
 
 ## Status and roadmap
 
@@ -312,7 +343,8 @@ plug in through `META-INF/services`.
   size and the fusion weights.
 - **Done (Phase 6, optional):** chapter and book summaries made by a small local model, so
   questions like "what is chapter 5 about?" can be answered (SPEC.md §5.7).
-- **Planned (Phase 7):** desktop and Android from one code base, sharing the same index file,
-  with on-device embeddings through ONNX Runtime. Design in SPEC.md §15.
+- **Phase 7 (steps 1–5 done):** desktop and Android from one code base, sharing the same index
+  file, with on-device embeddings through ONNX Runtime. The Android library passes its
+  instrumented tests on a phone. Next: measuring speed and memory on the phone (SPEC.md §15).
 - **Done (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
   table of contents and citations by printed page where the EPUB has a page list (SPEC.md §16).

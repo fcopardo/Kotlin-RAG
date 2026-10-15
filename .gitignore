@@ -8,3 +8,5 @@ build/
 *.db-shm
 .claude/settings.local.json
 models/
+local.properties
+*.hprof

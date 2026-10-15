@@ -48,11 +48,12 @@ object BookFormats {
     /** Detects the format from the content, not the extension. */
     fun sniff(file: File): BookFormat {
         if (!file.isFile) throw RagException.BookUnreadable("Not a file: $file")
-        val head = file.inputStream().use { it.readNBytes(1024) }
+        // Not readNBytes/readAllBytes: those are API 33 on Android (minSdk 26).
+        val head = file.inputStream().use { input -> ByteArray(1024).let { buf -> buf.copyOf(maxOf(0, input.read(buf))) } }
         if (String(head, Charsets.ISO_8859_1).contains("%PDF-")) return BookFormat.PDF
         if (head.size >= 4 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()) {
             val mimetype = try {
-                ZipFile(file).use { zip -> zip.getEntry("mimetype")?.let { e -> zip.getInputStream(e).use { String(it.readAllBytes()).trim() } } }
+                ZipFile(file).use { zip -> zip.getEntry("mimetype")?.let { e -> zip.getInputStream(e).use { String(it.readBytes()).trim() } } }
             } catch (e: ZipException) {
                 throw RagException.BookUnreadable("Damaged zip file: $file (${e.message})", e)
             }

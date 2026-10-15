@@ -35,7 +35,7 @@ class EpubPackage private constructor(
 ) : AutoCloseable {
 
     /** The document at [path] inside the zip, as text; null if it's missing. */
-    fun read(path: String): String? = zip.getEntry(path)?.let { e -> zip.getInputStream(e).use { String(it.readAllBytes(), Charsets.UTF_8) } }
+    fun read(path: String): String? = zip.getEntry(path)?.let { e -> zip.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) } }
 
     override fun close() = zip.close()
 
@@ -57,7 +57,7 @@ class EpubPackage private constructor(
         }
 
         private fun parse(zip: ZipFile, file: File): EpubPackage {
-            fun text(path: String) = zip.getEntry(path)?.let { e -> zip.getInputStream(e).use { String(it.readAllBytes(), Charsets.UTF_8) } }
+            fun text(path: String) = zip.getEntry(path)?.let { e -> zip.getInputStream(e).use { String(it.readBytes(), Charsets.UTF_8) } }
             checkDrm(zip, ::text, file)
 
             val container = text("META-INF/container.xml") ?: throw RagException.BookUnreadable("Damaged EPUB (no META-INF/container.xml): $file")

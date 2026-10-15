@@ -34,6 +34,7 @@ class Indexer(
         embedder: Embedder? = null,
         embedDim: Int = DEFAULT_DIM,
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
+        onBatch: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): IndexResult {
         val sha = sha256(file)
         val existing = store.findBookBySha(sha)
@@ -42,15 +43,23 @@ class Indexer(
         embedder?.checkAvailable()
         val structured = reader.read(file, options = ReadOptions(tocPages = tocPages, locationSize = locationSize))
         val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing)
-        val embedded = embedder?.let { embed(bookId, it, embedDim) }
+        val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch) }
         return IndexResult(bookId, skipped = false, embedded = embedded)
     }
 
     /**
      * Embeds the book's paragraphs that have no vector yet. Switching model or dimension drops the
      * existing vectors first. Identical paragraphs are embedded once.
+     *
+     * [onBatch] runs after each committed batch with the texts embedded so far and in total. It may
+     * throw to stop (e.g. a cancelled coroutine): the book stays `partial` and a later call resumes.
      */
-    fun embed(bookId: Long, embedder: Embedder, embedDim: Int = DEFAULT_DIM): EmbedResult {
+    fun embed(
+        bookId: Long,
+        embedder: Embedder,
+        embedDim: Int = DEFAULT_DIM,
+        onBatch: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): EmbedResult {
         val book = store.book(bookId) ?: throw IllegalArgumentException("no book with id $bookId")
         require(embedDim <= embedder.dim) { "--embed-dim $embedDim is larger than the model's ${embedder.dim} dimensions" }
         Quantizer.truncate(FloatArray(embedDim), embedDim) // validates the dimension early
@@ -80,6 +89,7 @@ class Indexer(
             store.saveEmbeddings(embedder.model, batch.zip(vectors).flatMap { (group, v) -> group.map { it.unitId to v } })
             embedded += batch.size
             copied += batch.sumOf { it.size - 1 }
+            onBatch(embedded, byHash.size)
         }
         store.setEmbedState(bookId, embedder.model, embedDim, "complete")
         return EmbedResult(embedded, copied, "complete")

@@ -1,9 +1,13 @@
 plugins {
     kotlin("jvm") version "2.4.21" apply false
     kotlin("plugin.serialization") version "2.4.21" apply false
+    id("com.android.library") version "9.4.1" apply false
 }
 
-subprojects {
+// Android modules configure themselves (AGP has Kotlin built in); everything else is plain JVM.
+val androidModules = setOf("android", "pdf-pdfbox-android")
+
+configure(subprojects.filter { it.name !in androidModules }) {
     apply(plugin = "org.jetbrains.kotlin.jvm")
     group = "rag"
     version = "0.1.0"

@@ -1,3 +1,11 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
 plugins {
     // Lets the JDK 21 toolchain be downloaded (once, into Gradle's cache) when none is installed.
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
@@ -24,4 +32,7 @@ include(
     ":embed-onnx",
     ":cli",
     ":integration-tests",
+    // Android (SPEC §15.2): PDFBox-Android port of :pdf-pdfbox, and the library apps use.
+    ":pdf-pdfbox-android",
+    ":android",
 )

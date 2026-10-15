@@ -27,3 +27,18 @@ val testBundledSqlite by tasks.registering(Test::class) {
 tasks.check {
     dependsOn(testBundledSqlite)
 }
+
+// Inputs and expected outputs for the Android instrumented tests (SPEC §15.8), built on the desktop.
+val androidGoldens by tasks.registering(JavaExec::class) {
+    description = "Writes the fixture books, a desktop-built DB and the goldens the Android tests compare against."
+    val epubs = layout.projectDirectory.dir("src/test/resources/epub")
+    val out = layout.buildDirectory.dir("androidGoldens")
+    inputs.files(sourceSets.test.get().runtimeClasspath)
+    inputs.dir(epubs)
+    outputs.dir(out)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("rag.android.AndroidGoldensKt")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
+    argumentProviders.add(CommandLineArgumentProvider { listOf(out.get().asFile.path, epubs.asFile.path) })
+}
