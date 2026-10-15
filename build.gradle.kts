@@ -19,6 +19,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("androidx.sqlite:sqlite-bundled:2.7.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime:1.30.0")
     implementation("com.github.ajalt.clikt:clikt:5.1.0")
     implementation("org.jsoup:jsoup:1.23.2")
 
@@ -48,7 +49,7 @@ tasks.withType<Test>().configureEach {
     useJUnitPlatform()
     jvmArgs("--enable-native-access=ALL-UNNAMED")
     // Env vars aren't task inputs by default: without this, toggling RAG_OLLAMA reuses a stale result.
-    listOf("RAG_OLLAMA", "RAG_OLLAMA_URL", "RAG_BOOK_PDF", "RAG_KOTLIN_PDF", "RAG_CTCI_PDF", "RAG_SUMMARY_MODEL").forEach { name ->
+    listOf("RAG_OLLAMA", "RAG_OLLAMA_URL", "RAG_BOOK_PDF", "RAG_KOTLIN_PDF", "RAG_CTCI_PDF", "RAG_SUMMARY_MODEL", "RAG_ONNX_MODEL_DIR").forEach { name ->
         inputs.property(name, providers.environmentVariable(name).orElse(""))
     }
 }

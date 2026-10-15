@@ -276,6 +276,7 @@ environment variables:
 | `RAG_OLLAMA=1` | Tests against a real local Ollama (`mxbai-embed-large` and `nomic-embed-text` must be pulled). `RAG_OLLAMA_URL` overrides the server URL. |
 | `RAG_BOOK_PDF=/path/to/book.pdf` | Tests against *Jetpack Compose internals* (Jorge Castillo, Leanpub, 2022-11-20). The book is copyrighted and isn't part of this repository; use your own copy. |
 | `RAG_SUMMARY_MODEL=llama3.2:3b` | With `RAG_BOOK_PDF` and `RAG_OLLAMA=1`: summarizes the book and checks word caps, grounding and summary hits (~4 minutes). |
+| `RAG_ONNX_MODEL_DIR=models/mxbai-embed-large-v1` | With `RAG_OLLAMA=1`: ONNX Runtime vs Ollama parity for mxbai (the on-device path). Needs `vocab.txt` and `onnx/model.onnx` + `onnx/model_quantized.onnx` from [mixedbread-ai/mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) (Apache-2.0); `models/` is git-ignored. |
 | `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
 
 The EPUB tests use two public-domain editions of *The Art of War* committed in
@@ -296,7 +297,7 @@ src/main/kotlin/rag/
   extract/           PDF text, header/footer/footnote/code-listing cleanup, normalization
   epub/              EPUB package, navigation, DRM checks, XHTML → text
   structure/         chapter detection (bookmarks, TOC), segmentation
-  embed/             Ollama client, truncation and quantization
+  embed/             Ollama client, ONNX Runtime embedder + WordPiece tokenizer, truncation and quantization
   index/             unit keys, indexing and embedding
   summarize/         summary tree, prompts, Ollama summarizer
   store/             SQLite schema and queries

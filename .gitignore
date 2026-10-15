@@ -7,3 +7,4 @@ build/
 *.db-wal
 *.db-shm
 .claude/settings.local.json
+models/

@@ -700,6 +700,15 @@ Vectors are comparable only if they come from the same model weights and the sam
 - The stored `embed_model` names the model and its variant, e.g. `mxbai-embed-large` or `mxbai-embed-large@onnx-int8`.
 - Two variants count as the **same model**, so an index built with one can be searched with the other, only if a parity test shows average cosine ≥ **0.99** between their vectors for the same texts, and the evaluation set (§11) gives the same recall within one question.
 - Otherwise they're different models, and the existing model check (exit code 5 on the desktop, an exception on Android) prevents mixing them.
+- **Measured for `mxbai-embed-large`** (2026-10-14, `OnnxParityTest`; ONNX Runtime 1.30.0, files from `mixedbread-ai/mxbai-embed-large-v1`, Apache-2.0; 50 *Art of War* paragraphs and 20 questions):
+
+  | Variant | File | Documents (avg / min cosine vs Ollama) | Queries |
+  |---|---|---|---|
+  | ONNX fp32 | `onnx/model.onnx`, 1,337 MB | 1.0000 / 1.0000 | 1.0000 |
+  | ONNX int8 | `onnx/model_quantized.onnx`, 337 MB | 0.9972 / 0.9961 | 0.9966 (min 0.9934) |
+
+  - **Cross-runtime search:** recall@5 on *Art of War* is identical in every combination, vector 0.80 and hybrid 0.75. That covers an Ollama-built index searched with fp32 or int8 ONNX queries, and an int8-built index searched with Ollama queries.
+  - **Decision:** both ONNX variants count as the same model, so they store `mxbai-embed-large` and an index can move between desktop and phone in either direction.
 
 ### 15.5 Ways to run on a phone (from lightest to heaviest)
 1. **Keyword only:** copy a desktop-built `.db`; no model on the device. In §11 this finds all keyword questions (lexical recall@5 0.55 overall, 1.00 on keyword questions).
@@ -715,7 +724,7 @@ Vectors are comparable only if they come from the same model weights and the sam
 1. ✅ Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
 2. ✅ The two-driver store (above). Real index files from before the change give identical evaluation output on both drivers (*Compose* with summaries 0.80, *Art of War* 0.75 / 0.65).
 3. Split the Gradle modules as in §15.3.
-4. Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model.
+4. ✅ Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model. Done **before** step 3, because parity decides index compatibility between desktop and phone, while the module split is mechanical.
 5. Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests on an emulator.
 6. Measure the reference-phone numbers from §15.6, record them, and choose the phone model.
 
@@ -723,8 +732,8 @@ Vectors are comparable only if they come from the same model weights and the sam
 - After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).
 - **Bundled SQLite:** `sqlite_version()` ≥ 3.43, and a contentless FTS5 table with `contentless_delete=1` can be created, matched and deleted from, on the JVM (✅ 3.50.1, the whole suite passes) and on an Android emulator.
 - **Driver parity:** ✅ files written by either driver read identically with the other; existing files answer the evaluation sets identically.
-- **WordPiece tokenizer:** the same token ids as the model's reference tokenizer on 100 sample sentences (fixture file), including code and punctuation.
-- **Parity:** `OnnxEmbedder` vs `OllamaEmbedder` for the default model, average cosine ≥ 0.99 on 50 paragraphs from the generated sample book. Evaluation-set recall within one question.
+- **WordPiece tokenizer:** ✅ BERT's own reference example (`unaffable` → `una ##ffa ##ble`) plus algorithm tests on a tiny vocabulary: lowercasing, accent stripping, punctuation, CJK, `[UNK]`, truncation to 512. The planned 100-sentence reference fixture wasn't built: no reference tokenizer is installed here, and the cosine parity below (1.0000 for fp32) can't happen with wrong token ids. It covers the same risk.
+- **Parity:** ✅ `OnnxEmbedder` vs `OllamaEmbedder` for the default model: average cosine 1.0000 (fp32) and 0.997 (int8) on 50 real paragraphs (the committed *Art of War* fixture rather than the generated sample book, whose text is too repetitive). Evaluation-set recall identical (§15.4).
 - **Same file on both platforms:** a DB built by the desktop CLI and copied into an Android instrumented test opens without migration and returns the same lexical results for the evaluation set. With the parity-checked model, it also returns the same hybrid results within one question.
 - **Indexing on Android:** the generated 12-page sample book (§11) indexes on an emulator with the same chapters, paragraph count and unit keys as on desktop.
 - **Cancellation:** cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it.
