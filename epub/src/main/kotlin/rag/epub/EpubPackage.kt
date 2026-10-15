@@ -32,6 +32,8 @@ class EpubPackage private constructor(
     val pageList: List<PageTarget>,
     /** "nav" (EPUB 3) or "ncx" (EPUB 2), or null without a usable TOC. */
     val tocKind: String?,
+    /** `dc:subject` values, as written. */
+    val subjects: List<String> = emptyList(),
 ) : AutoCloseable {
 
     /** The document at [path] inside the zip, as text; null if it's missing. */
@@ -70,6 +72,7 @@ class EpubPackage private constructor(
 
             val title = opf.allElements.firstOrNull { local(it) == "title" && it.tagName().startsWith("dc:") }?.text()?.trim()?.takeIf { it.isNotEmpty() }
             val language = opf.allElements.firstOrNull { local(it) == "language" && it.tagName().startsWith("dc:") }?.text()?.trim()?.takeIf { it.isNotEmpty() }
+            val subjects = opf.allElements.filter { local(it) == "subject" && it.tagName().startsWith("dc:") }.map { it.text().trim() }.filter { it.isNotEmpty() }
 
             data class Item(val id: String, val path: String, val mediaType: String, val properties: Set<String>)
             val manifest = opf.allElements.filter { local(it) == "item" }.mapNotNull { e ->
@@ -97,7 +100,7 @@ class EpubPackage private constructor(
                 else -> emptyList<NavEntry>() to null
             }
             val pageList = nav?.second?.takeIf { it.isNotEmpty() } ?: ncx?.second.orEmpty()
-            return EpubPackage(zip, title, language, spine, toc, pageList, tocKind)
+            return EpubPackage(zip, title, language, spine, toc, pageList, tocKind, subjects)
         }
 
         /** DRM: Adobe (rights.xml), Apple (sinf.xml), or encrypted content beyond font obfuscation. */

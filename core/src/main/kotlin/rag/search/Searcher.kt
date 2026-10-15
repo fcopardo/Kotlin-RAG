@@ -10,6 +10,7 @@ import rag.index.UnitKind
 import rag.store.BookRow
 import rag.store.SqliteStore
 import rag.store.StoredUnit
+import rag.summarize.Subjects
 import java.util.PriorityQueue
 
 enum class Mode { HYBRID, LEXICAL, VECTOR }
@@ -85,23 +86,67 @@ class Searcher(
      * differs from the one a copied index was built with, SPEC §15.9).
      */
     private val keywordsOnModelMismatch: Boolean = false,
+    /**
+     * RAM for cached 1-bit vectors (paragraphs and summaries, least recently used first out). Books
+     * beyond it are read from SQLite on each query instead, so memory stays flat as books are added.
+     */
+    private val bitsCacheBytes: Long = BITS_CACHE_BYTES,
+    /**
+     * Cosine from which a subject filter matches a book's subject by meaning (SPEC §8.5). Null uses
+     * the calibrated value for the embedder's model ([SUBJECT_MATCH]); without one, names only.
+     */
+    private val subjectMatch: Double? = null,
 ) {
     private val mismatchWarned = HashSet<Long>()
 
     private val texts = object : LinkedHashMap<Long, String>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
     }
-    private val binaryIndexes = HashMap<Long, BinaryIndex>()
-    private val summaryIndexes = HashMap<Long, BinaryIndex>()
+    private val bitsCache = BitsCache(bitsCacheBytes)
     private val pageLabels = HashMap<Long, List<String>>()
 
-    private class BinaryIndex(val unitIds: LongArray, val bits: Array<LongArray>)
+    private class BinaryIndex(val unitIds: LongArray, val bits: Array<LongArray>) {
+        /** Approximate heap size: ids, plus each vector's longs and array header. */
+        val bytes: Long = unitIds.size * 8L + bits.sumOf { it.size * 8L + 16 }
+    }
+
+    /** LRU of binary indexes, bounded by their total size in bytes. */
+    private class BitsCache(private val maxBytes: Long) {
+        private val entries = LinkedHashMap<String, BinaryIndex>(16, 0.75f, true)
+        private var bytes = 0L
+
+        fun get(key: String, load: () -> BinaryIndex): BinaryIndex {
+            entries[key]?.let { return it }
+            val index = load()
+            if (index.bytes > maxBytes) return index // too big to keep: used for this query only
+            entries[key] = index
+            bytes += index.bytes
+            val it = entries.entries.iterator()
+            while (bytes > maxBytes && it.hasNext()) {
+                val eldest = it.next()
+                if (eldest.key == key) continue
+                bytes -= eldest.value.bytes
+                it.remove()
+            }
+            return index
+        }
+
+        val size: Long get() = bytes
+    }
+
+    /** Bytes of 1-bit vectors cached right now (for tests and memory reports). */
+    val cachedBitsBytes: Long get() = bitsCache.size
 
     private class QueryContext(val text: String, val terms: String?, val vector: FloatArray?)
 
-    fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID): List<Hit> {
+    /**
+     * @param subject only books about this (SPEC §8.5): a subject named by these words, or close in
+     *   meaning to one of the book's subjects when there's an embedder ("android" finds "Jetpack Compose").
+     */
+    fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID, subject: String? = null): List<Hit> {
         require(k > 0) { "k must be positive" }
-        val books = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
+        val all = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
+        val books = if (subject == null) all else booksAbout(subject, all.map { it.id }.toSet()).let { ids -> all.filter { it.id in ids } }
         if (books.isEmpty()) return emptyList()
         val n = maxOf(4 * k, 20)
 
@@ -112,7 +157,8 @@ class Searcher(
         val exact = exactHits(query, books, context).distinctBy { it.second }
 
         val lexical = if (mode == Mode.VECTOR || context.terms == null) emptyList()
-        else books.flatMap { b -> store.ftsSearch("para_fts", context.terms, b.id, limit = n) }
+        // One query over every book in scope, so hits are ranked by relevance, not by book.
+        else store.ftsSearch("para_fts", context.terms, bookId = bookId, limit = n, bookIds = if (subject != null) books.map { it.id } else null)
         val dense = vector?.let { v -> vectorSearch(v, books, n) }.orEmpty()
 
         val summaries = if (includeSummaries) summaryRanking(context, books, mode, n) else emptyList()
@@ -176,7 +222,7 @@ class Searcher(
         val withSummaries = books.filter { it.summaryStatus != "none" }
         if (withSummaries.isEmpty()) return emptyList()
         val lexical = if (mode == Mode.VECTOR || context.terms == null) emptyList()
-        else withSummaries.flatMap { store.summaryFtsSearch(context.terms, it.id, limit = n) }
+        else store.summaryFtsSearch(context.terms, withSummaries.map { it.id }, limit = n)
         val dense = context.vector?.let { v ->
             denseSearch(v, withSummaries, n, { id -> summaryIndex(id) }, store::summaryVectors)
         }.orEmpty()
@@ -193,9 +239,30 @@ class Searcher(
         return hit(paragraph, null, MatchType.SUMMARY, score, context).copy(summary = summary.text, summaryLevel = summary.level)
     }
 
-    private fun summaryIndex(bookId: Long): BinaryIndex = summaryIndexes.getOrPut(bookId) {
+    private fun summaryIndex(bookId: Long): BinaryIndex = bitsCache.get("s$bookId") {
         val rows = store.summaryBinaryVectors(bookId, embedder!!.model)
         BinaryIndex(LongArray(rows.size) { rows[it].first }, Array(rows.size) { rows[it].second })
+    }
+
+    // --- subjects (SPEC §8.5) ---
+
+    /** Books in [scope] with a subject named by [subject], or close to it in meaning. */
+    fun booksAbout(subject: String, scope: Set<Long>? = null): Set<Long> {
+        val byName = store.allSubjects().filter { (book, subjects) ->
+            (scope == null || book in scope) && subjects.any { Subjects.nameMatches(subject, it.subject) }
+        }.keys
+        val e = embedder ?: return byName
+        val threshold = subjectMatch ?: SUBJECT_MATCH[e.model.substringBefore('@')] ?: return byName
+        val rows = store.subjectVectors(e.model).filter { scope == null || it.first in scope }
+        if (rows.isEmpty()) return byName
+        val full = try {
+            Vectors.l2Normalize(e.embedDocuments(listOf(subject)).single())
+        } catch (ex: RagException.EmbeddingBackendUnavailable) {
+            warn("${ex.message}; matching subjects by name only")
+            return byName
+        }
+        val close = rows.filter { (_, _, v) -> Quantizer.dot(Quantizer.truncate(full, v.int8.size), v.int8, v.scale) >= threshold }
+        return byName + close.map { it.first }
     }
 
     // --- exact path ---
@@ -271,25 +338,33 @@ class Searcher(
         val rescoreCount = maxOf(10 * n / 4, 200)
         // Only books embedded with this model: others were rejected or left to keywords (queryVector).
         val model = embedder?.model ?: return emptyList()
-        val scored = books.filter { it.model(model) != null }.flatMap { book ->
+        // One pool of rescoreCount candidates across all books, so a query reads the same number of
+        // vectors back whatever the number of books. Distances are divided by the dimension, since
+        // books may store different ones; for a single book that's the same order as raw distances.
+        class Candidate(val distance: Double, val unitId: Long, val query: FloatArray)
+        val heap = PriorityQueue<Candidate>(compareByDescending { it.distance })
+        for (book in books.filter { it.model(model) != null }) {
             val dim = book.model(model)!!.dim
             if (dim > full.size) throw RagException.ModelMismatch("Book ${book.id} has $dim-dim vectors; the query has ${full.size}")
             val query = Quantizer.truncate(full, dim)
             val queryBits = Quantizer.bits(query)
             val index = indexOf(book.id)
-
-            // Keep the rescoreCount smallest Hamming distances with a bounded max-heap.
-            val heap = PriorityQueue<Pair<Int, Long>>(compareByDescending { it.first })
             for (i in index.unitIds.indices) {
-                heap += Quantizer.hamming(queryBits, index.bits[i]) to index.unitIds[i]
+                val distance = Quantizer.hamming(queryBits, index.bits[i]).toDouble() / dim
+                // Most vectors can't enter a full pool: skip them before allocating anything.
+                if (heap.size >= rescoreCount && distance >= heap.peek().distance) continue
+                heap += Candidate(distance, index.unitIds[i], query)
                 if (heap.size > rescoreCount) heap.poll()
             }
-            fetch(heap.map { it.second }).map { v -> v.unitId to Quantizer.dot(query, v.int8, v.scale) }
+        }
+        // Rescore with int8, using each book's truncated query.
+        val scored = heap.groupBy { it.query }.flatMap { (query, candidates) ->
+            fetch(candidates.map { it.unitId }).map { v -> v.unitId to Quantizer.dot(query, v.int8, v.scale) }
         }
         return scored.sortedByDescending { it.second }.take(n).map { it.first }
     }
 
-    private fun binaryIndex(bookId: Long): BinaryIndex = binaryIndexes.getOrPut(bookId) {
+    private fun binaryIndex(bookId: Long): BinaryIndex = bitsCache.get("p$bookId") {
         val rows = store.binaryVectors(bookId, embedder!!.model)
         BinaryIndex(LongArray(rows.size) { rows[it].first }, Array(rows.size) { rows[it].second })
     }
@@ -308,7 +383,8 @@ class Searcher(
         val phrases = store.children(paragraph.id)
         if (phrases.size <= 1) return phrases.firstOrNull() ?: paragraph
         context.terms?.let { terms ->
-            store.ftsSearch("phrase_fts", terms, parentId = paragraph.id, limit = 1).firstOrNull()?.let { id ->
+            val rowids = phrases.minOf { it.id }..phrases.maxOf { it.id }
+            store.ftsSearch("phrase_fts", terms, parentId = paragraph.id, limit = 1, rowids = rowids).firstOrNull()?.let { id ->
                 return phrases.first { it.id == id }
             }
         }
@@ -360,5 +436,14 @@ class Searcher(
 
         /** Summary hits per query, so passages aren't crowded out (SPEC §8.3). */
         const val MAX_SUMMARY_HITS = 2
+
+        /** 16 MB: ~88 bytes per paragraph at 512 dims, so ~190k paragraphs (~115 books like *Compose internals*). */
+        const val BITS_CACHE_BYTES = 16L * 1024 * 1024
+
+        /**
+         * Subject-filter cosine per model, calibrated on four real books' subjects (SPEC §8.5): unrelated
+         * pairs reach 0.56 with mxbai and 0.79 with nomic, good matches start at 0.67 and 0.84.
+         */
+        val SUBJECT_MATCH = mapOf("mxbai-embed-large" to 0.65, "nomic-embed-text" to 0.83)
     }
 }

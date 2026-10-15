@@ -29,6 +29,8 @@ class PdfBookSource(
         val chapters = Chapters.compute(book, plan.starts)
         val title = document.documentInformation?.title?.trim()?.takeIf { it.isNotEmpty() } ?: fallbackTitle
         val segmenter = Segmenter(options.locale ?: Locale.ENGLISH)
-        return StructuredBook(book, chapters, plan, segmenter.segment(book, chapters), title, extractor = extractor)
+        // PDF Keywords are free text, usually comma- or semicolon-separated.
+        val keywords = document.documentInformation?.keywords.orEmpty().split(',', ';').map { it.trim() }.filter { it.isNotEmpty() }
+        return StructuredBook(book, chapters, plan, segmenter.segment(book, chapters), title, extractor = extractor, subjects = keywords)
     }
 }

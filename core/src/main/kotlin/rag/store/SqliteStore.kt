@@ -5,6 +5,8 @@ import rag.embed.QuantizedVector
 import rag.embed.Quantizer
 import rag.index.UnitKeys
 import rag.index.UnitKind
+import rag.summarize.BookSubject
+import rag.summarize.Subjects
 import java.time.Instant
 
 data class BookRow(
@@ -96,7 +98,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         db.execute("PRAGMA journal_mode = WAL")
         SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
         migrate()
-        // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4.
+        // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;
+        // book subjects and vectors are 5 (new tables only, created above).
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -171,13 +174,13 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     fun findBookBySha(sha256: String): Long? =
         query("SELECT id FROM book WHERE file_sha256 = ?", sha256) { it.long(1) }.firstOrNull()
 
-    fun book(id: Long): BookRow? = query("SELECT * FROM book WHERE id = ?", id, mapper = ::bookRow).firstOrNull()
+    fun book(id: Long): BookRow? = query("SELECT $BOOK_COLUMNS FROM book WHERE id = ?", id, mapper = ::bookRow).firstOrNull()
         ?.let { it.copy(models = models(it.id)) }
 
     fun books(): List<BookRow> {
         val models = query("SELECT * FROM book_model ORDER BY rowid") { it.long("book_id") to bookModel(it) }
             .groupBy({ it.first }, { it.second })
-        return query("SELECT * FROM book ORDER BY id", mapper = ::bookRow).map { it.copy(models = models[it.id].orEmpty()) }
+        return query("SELECT $BOOK_COLUMNS FROM book ORDER BY id", mapper = ::bookRow).map { it.copy(models = models[it.id].orEmpty()) }
     }
 
     private fun models(bookId: Long): List<BookModel> =
@@ -201,6 +204,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         batch("INSERT INTO page(book_id, page_no, char_start, label) VALUES (?,?,?,?)",
             structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
         insertUnits(bookId, structured)
+        setSubjects(bookId, "metadata", Subjects.fromMetadata(structured.subjects))
         bookId
     }
 
@@ -276,17 +280,31 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     }
 
     /**
-     * Unit ids matching an FTS5 query, best BM25 first, limited to one book and/or to the children
-     * of one unit (e.g. a paragraph's phrases). The FTS tables are contentless, so this joins on rowid.
+     * Unit ids matching an FTS5 query, best BM25 first, limited to one book, to [bookIds], and/or to
+     * the children of one unit (e.g. a paragraph's phrases). The FTS tables are contentless, so this
+     * joins on rowid. Several books are ranked together in one query: BM25 over one FTS table is
+     * comparable across books.
      */
-    fun ftsSearch(table: String, matchQuery: String, bookId: Long? = null, parentId: Long? = null, limit: Int = 20): List<Long> {
+    fun ftsSearch(
+        table: String,
+        matchQuery: String,
+        bookId: Long? = null,
+        parentId: Long? = null,
+        limit: Int = 20,
+        bookIds: Collection<Long>? = null,
+        /** Narrows the FTS scan itself (e.g. one paragraph's phrases, which have consecutive ids). */
+        rowids: LongRange? = null,
+    ): List<Long> {
         require(table in setOf("para_fts", "phrase_fts")) { "unknown FTS table $table" }
         val filters = buildList {
             if (bookId != null) add("u.book_id = ?")
             if (parentId != null) add("u.parent_id = ?")
+            if (bookIds != null) add("u.book_id IN (${bookIds.joinToString(",") { "?" }})")
+            if (rowids != null) add("$table.rowid BETWEEN ? AND ?")
         }
         val where = (listOf("$table MATCH ?") + filters).joinToString(" AND ")
-        val args = listOfNotNull<Any>(matchQuery, bookId, parentId, limit).toTypedArray()
+        val args = (listOfNotNull<Any>(matchQuery, bookId, parentId) + bookIds.orEmpty() +
+            listOfNotNull(rowids?.first, rowids?.last) + limit).toTypedArray()
         return query("SELECT $table.rowid FROM $table JOIN unit u ON u.id = $table.rowid WHERE $where ORDER BY bm25($table) LIMIT ?", *args) {
             it.long(1)
         }
@@ -323,12 +341,80 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         if (model == null) {
             update("DELETE FROM embedding WHERE unit_id IN (SELECT id FROM unit WHERE book_id = ?)", bookId)
             update("DELETE FROM book_model WHERE book_id = ?", bookId)
+            update("DELETE FROM book_vector WHERE book_id = ?", bookId)
+            update("DELETE FROM subject_vector WHERE book_id = ?", bookId)
         } else {
             update("DELETE FROM embedding WHERE model = ? AND unit_id IN (SELECT id FROM unit WHERE book_id = ?)", model, bookId)
             update("DELETE FROM book_model WHERE book_id = ? AND model = ?", bookId, model)
+            update("DELETE FROM book_vector WHERE book_id = ? AND model = ?", bookId, model)
+            update("DELETE FROM subject_vector WHERE book_id = ? AND model = ?", bookId, model)
         }
         syncPrimary(bookId)
     }
+
+    // --- subjects and book vectors (SPEC §8.5) ---
+
+    /** A book's subjects, from every source, highest weight first. */
+    fun subjects(bookId: Long): List<BookSubject> = query(
+        "SELECT subject, weight, source FROM book_subject WHERE book_id = ? ORDER BY weight DESC, subject", bookId,
+    ) { BookSubject(it.string(1)!!, it.float(2).toDouble(), it.string(3)!!) }
+
+    /** Every book's subjects, by book id. */
+    fun allSubjects(): Map<Long, List<BookSubject>> = query(
+        "SELECT book_id, subject, weight, source FROM book_subject ORDER BY book_id, weight DESC, subject",
+    ) { it.long(1) to BookSubject(it.string(2)!!, it.float(3).toDouble(), it.string(4)!!) }.groupBy({ it.first }, { it.second })
+
+    /** Replaces a book's subjects from [source] ("metadata" or "llm"); vectors of dropped subjects go too. */
+    fun setSubjects(bookId: Long, source: String, subjects: List<BookSubject>) = transaction {
+        update("DELETE FROM book_subject WHERE book_id = ? AND source = ?", bookId, source)
+        batch("INSERT OR REPLACE INTO book_subject(book_id, subject, weight, source) VALUES (?,?,?,?)",
+            subjects.map { listOf(bookId, it.subject, it.weight, source) })
+        update("DELETE FROM subject_vector WHERE book_id = ? AND subject NOT IN (SELECT subject FROM book_subject WHERE book_id = ?)", bookId, bookId)
+    }
+
+    /** Subjects of a book without a vector from this model and dimension. */
+    fun subjectsMissingVector(bookId: Long, model: String, dim: Int): List<String> = query(
+        """SELECT DISTINCT s.subject FROM book_subject s
+           LEFT JOIN subject_vector v ON v.book_id = s.book_id AND v.subject = s.subject AND v.model = ? AND v.dim = ?
+           WHERE s.book_id = ? AND v.book_id IS NULL ORDER BY s.subject""",
+        model, dim, bookId,
+    ) { it.string(1)!! }
+
+    fun saveSubjectVectors(bookId: Long, model: String, vectors: List<Pair<String, QuantizedVector>>) = transaction {
+        batch("INSERT OR REPLACE INTO subject_vector(book_id, subject, model, dim, scale, vec_i8) VALUES (?,?,?,?,?,?)",
+            vectors.map { (subject, v) -> listOf(bookId, subject, model, v.dim, v.scale, v.int8) })
+    }
+
+    /** Every subject vector of this model: (book, subject, vector). Few and short, read in full. */
+    fun subjectVectors(model: String): List<Triple<Long, String, StoredVector>> = query(
+        "SELECT book_id, subject, scale, vec_i8 FROM subject_vector WHERE model = ?", model,
+    ) { Triple(it.long(1), it.string(2)!!, StoredVector(0, it.float(3), it.bytes(4), LongArray(0))) }
+
+    /**
+     * The book's vector for [model]: the mean of its paragraph vectors, normalized. A cheap "what is
+     * this book about" point for routing searches across books.
+     */
+    fun updateBookVector(bookId: Long, model: String) = transaction {
+        var sum: DoubleArray? = null
+        query(
+            "SELECT e.scale, e.vec_i8 FROM embedding e JOIN unit u ON u.id = e.unit_id WHERE u.book_id = ? AND e.model = ?",
+            bookId, model,
+        ) { r ->
+            val scale = r.float(1)
+            val int8 = r.bytes(2)
+            val acc = sum ?: DoubleArray(int8.size).also { sum = it }
+            for (i in int8.indices) acc[i] += int8[i] * scale.toDouble()
+        }
+        val mean = sum ?: return@transaction
+        val v = Quantizer.quantize(rag.embed.Vectors.l2Normalize(FloatArray(mean.size) { mean[it].toFloat() }))
+        update("INSERT OR REPLACE INTO book_vector(book_id, model, dim, scale, vec_i8) VALUES (?,?,?,?,?)",
+            bookId, model, v.dim, v.scale, v.int8)
+    }
+
+    /** Book vectors of this model, by book id. */
+    fun bookVectors(model: String): Map<Long, StoredVector> = query(
+        "SELECT book_id, scale, vec_i8 FROM book_vector WHERE model = ?", model,
+    ) { it.long(1) to StoredVector(0, it.float(2), it.bytes(3), LongArray(0)) }.toMap()
 
     /** Records a model's progress on a book; the first model added is the book's primary one. */
     fun setEmbedState(bookId: Long, model: String, dim: Int, status: String) = transaction {
@@ -422,11 +508,19 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     }
 
     /** Summary ids matching an FTS5 query in one book, best BM25 first. */
-    fun summaryFtsSearch(matchQuery: String, bookId: Long, limit: Int = 20): List<Long> = query(
-        """SELECT summary_fts.rowid FROM summary_fts JOIN summary s ON s.id = summary_fts.rowid
-           WHERE summary_fts MATCH ? AND s.book_id = ? ORDER BY bm25(summary_fts) LIMIT ?""",
-        matchQuery, bookId, limit,
-    ) { it.long(1) }
+    fun summaryFtsSearch(matchQuery: String, bookId: Long, limit: Int = 20): List<Long> =
+        summaryFtsSearch(matchQuery, listOf(bookId), limit)
+
+    /** Summary ids in any of [bookIds], ranked together, best BM25 first. */
+    fun summaryFtsSearch(matchQuery: String, bookIds: Collection<Long>, limit: Int = 20): List<Long> {
+        if (bookIds.isEmpty()) return emptyList()
+        return query(
+            """SELECT summary_fts.rowid FROM summary_fts JOIN summary s ON s.id = summary_fts.rowid
+               WHERE summary_fts MATCH ? AND s.book_id IN (${bookIds.joinToString(",") { "?" }})
+               ORDER BY bm25(summary_fts) LIMIT ?""",
+            matchQuery, *bookIds.toTypedArray(), limit,
+        ) { it.long(1) }
+    }
 
     /** Paragraph ids inside `[from, to]` matching an FTS5 query, best BM25 first. */
     fun paragraphsInSpan(matchQuery: String, bookId: Long, from: Int, to: Int, limit: Int = 1): List<Long> = query(
@@ -471,7 +565,14 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 4
+        const val SCHEMA_VERSION = 5
+
+        /**
+         * Every book column except `text`: reading a book row must not pull the whole book off disk
+         * (100 books' rows took 116 ms with it, 11 ms without; SPEC §8.4).
+         */
+        private const val BOOK_COLUMNS = "id, file_sha256, title, extractor, chapter_strategy, page_offset, embed_model, " +
+            "embed_dim, embed_status, created_at, format, page_kind, summary_model, summary_prompt, summary_status"
 
         /** SPEC §15.9: one vector per paragraph and model. */
         private val EMBEDDING_TABLE = """
@@ -562,6 +663,30 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
               model TEXT NOT NULL,
               dim INTEGER NOT NULL,
               status TEXT NOT NULL CHECK (status IN ('partial','complete')),
+              PRIMARY KEY (book_id, model)
+            );
+            CREATE TABLE IF NOT EXISTS book_subject (
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+              subject TEXT NOT NULL,
+              weight REAL NOT NULL,
+              source TEXT NOT NULL CHECK (source IN ('metadata','llm')),
+              PRIMARY KEY (book_id, subject, source)
+            );
+            CREATE TABLE IF NOT EXISTS subject_vector (
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+              subject TEXT NOT NULL,
+              model TEXT NOT NULL,
+              dim INTEGER NOT NULL,
+              scale REAL NOT NULL,
+              vec_i8 BLOB NOT NULL,
+              PRIMARY KEY (book_id, subject, model)
+            );
+            CREATE TABLE IF NOT EXISTS book_vector (
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+              model TEXT NOT NULL,
+              dim INTEGER NOT NULL,
+              scale REAL NOT NULL,
+              vec_i8 BLOB NOT NULL,
               PRIMARY KEY (book_id, model)
             );
             $SUMMARY_TABLE;

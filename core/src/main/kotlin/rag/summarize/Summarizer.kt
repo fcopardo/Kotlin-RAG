@@ -17,6 +17,10 @@ interface Summarizer {
     val model: String
     fun checkAvailable() {}
     fun summarize(task: SummaryTask): String
+
+    /** A free-form prompt, e.g. for book subjects (SPEC §8.5). Not every summarizer supports it. */
+    fun complete(system: String, prompt: String, maxTokens: Int = 200): String =
+        throw UnsupportedOperationException("$model only writes summaries")
 }
 
 /** The `v1` prompts (SPEC §5.7.3). Changing them means bumping [VERSION]. */

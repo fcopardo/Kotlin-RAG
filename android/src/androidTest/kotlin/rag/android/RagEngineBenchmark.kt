@@ -162,6 +162,43 @@ class RagEngineBenchmark {
         }
     }
 
+    /**
+     * Search across a many-book library (SPEC §8.4): `<ragBenchDir>/scale.db`, built on the desktop
+     * by ScaleTest (RAG_SCALE=100, RAG_SCALE_DIR) with FakeEmbedder vectors. Times two 1-bit cache
+     * sizes: 16 MB (the default, every book's bits in RAM) and 4 MB (most books streamed from SQLite).
+     */
+    @Test
+    fun libraryScale() {
+        val benchDir = InstrumentationRegistry.getArguments().getString("ragBenchDir")
+        assumeTrue("ragBenchDir not set", benchDir != null)
+        val source = File(benchDir!!, "scale.db")
+        assumeTrue("no scale.db in $benchDir", source.isFile)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = File(context.cacheDir, "scale.db").apply { delete() }
+        source.copyTo(db)
+        val questionsFile = File(context.cacheDir, "art-of-war-se.jsonl")
+        InstrumentationRegistry.getInstrumentation().context.assets.open("eval/art-of-war-se.jsonl").use { i -> questionsFile.outputStream().use { i.copyTo(it) } }
+        val queries = Evaluation.load(questionsFile).map { it.query }
+        val embedder = rag.embed.FakeEmbedder()
+        SqliteStore(db.path, BundledSqlDriver()).use { store ->
+            report("library", "${store.books().size} books, DB ${db.length() / 1_048_576} MB; ${memory()}")
+            for ((name, bytes) in listOf("16mb" to Searcher.BITS_CACHE_BYTES, "4mb" to 4L * 1024 * 1024)) {
+                val searcher = Searcher(store, embedder, bitsCacheBytes = bytes)
+                for (mode in listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID)) {
+                    searcher.search("warm up", 5, mode = mode)
+                    val times = queries.map { q ->
+                        val t = SystemClock.elapsedRealtimeNanos()
+                        searcher.search(q, 5, mode = mode)
+                        (SystemClock.elapsedRealtimeNanos() - t) / 1_000_000.0
+                    }.sorted()
+                    report("library.$name.${mode.name.lowercase()}", "median ${fmt(times[times.size / 2])} ms, max ${fmt(times.last())} ms")
+                }
+                report("library.$name.cache", "${searcher.cachedBitsBytes / 1_048_576} MB of 1-bit vectors in RAM; ${memory()}")
+            }
+        }
+        db.delete()
+    }
+
     /** Current and peak resident memory of this process (test app + library), from /proc. */
     private fun memory(): String {
         val status = File("/proc/self/status").readLines().associate { it.substringBefore(':') to it.substringAfter(':').trim() }

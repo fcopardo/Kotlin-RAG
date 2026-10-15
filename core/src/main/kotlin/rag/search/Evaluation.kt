@@ -73,11 +73,30 @@ object Evaluation {
         if (question.expectedChapter.isBlank()) null
         else hits.indexOfFirst { it.chapter.title == question.expectedChapter }.takeIf { it >= 0 }?.plus(1)
 
-    fun run(searcher: Searcher, questions: List<EvalQuestion>, modes: List<Mode>, k: Int = 5, bookId: Long? = null): List<QuestionResult> =
+    /**
+     * Searches [bookId] (or every book) and scores the hits. With [answerBookId], only hits from that
+     * book can answer: in a library, page 17 of another book doesn't answer a question about this one.
+     */
+    fun run(
+        searcher: Searcher,
+        questions: List<EvalQuestion>,
+        modes: List<Mode>,
+        k: Int = 5,
+        bookId: Long? = null,
+        answerBookId: Long? = bookId,
+    ): List<QuestionResult> =
         modes.flatMap { mode ->
             questions.map { q ->
-                val hits = searcher.search(q.query, k, bookId, mode)
-                QuestionResult(q, mode, pageRank(hits, q), chapterRank(hits, q), hits.map { it.paragraph.pageStart..it.paragraph.pageEnd })
+                val all = searcher.search(q.query, k, bookId, mode)
+                // Hits from other books keep their rank but can't answer.
+                val hits = if (answerBookId == null) all else all.map { if (it.bookId == answerBookId) it else null }
+                QuestionResult(
+                    q, mode,
+                    hits.indexOfFirst { it != null && answers(it, q) }.takeIf { it >= 0 }?.plus(1),
+                    if (q.expectedChapter.isBlank()) null
+                    else hits.indexOfFirst { it != null && it.chapter.title == q.expectedChapter }.takeIf { it >= 0 }?.plus(1),
+                    all.map { it.paragraph.pageStart..it.paragraph.pageEnd },
+                )
             }
         }
 

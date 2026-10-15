@@ -71,6 +71,7 @@ class EpubBookSource(private val textBuilder: EpubTextBuilder = EpubTextBuilder(
         StructuredBook(
             book, chapters, plan, Segmenter(locale).segment(book, chapters),
             title = pkg.title ?: file.nameWithoutExtension, format = BookFormat.EPUB, pageKind = pageKind, extractor = extractor,
+            subjects = pkg.subjects,
         )
     }
 }

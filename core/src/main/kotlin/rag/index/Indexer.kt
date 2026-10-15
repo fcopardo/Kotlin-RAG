@@ -70,7 +70,10 @@ class Indexer(
             .forEach { store.clearEmbeddings(bookId, it.model) }
         val missing = store.paragraphsMissingEmbedding(bookId, embedder.model)
         store.setEmbedState(bookId, embedder.model, embedDim, if (missing.isEmpty()) "complete" else "partial")
-        if (missing.isEmpty()) return EmbedResult(0, 0, "complete")
+        if (missing.isEmpty()) {
+            finish(bookId, embedder, embedDim)
+            return EmbedResult(0, 0, "complete")
+        }
 
         // Reuse vectors of identical text already in the DB, then embed one paragraph per new hash.
         var copied = 0
@@ -93,7 +96,22 @@ class Indexer(
             onBatch(embedded, byHash.size)
         }
         store.setEmbedState(bookId, embedder.model, embedDim, "complete")
+        finish(bookId, embedder, embedDim)
         return EmbedResult(embedded, copied, "complete")
+    }
+
+    /** Once a model is complete: the book's mean vector and its subjects' vectors (SPEC §8.5). */
+    private fun finish(bookId: Long, embedder: Embedder, embedDim: Int) {
+        store.updateBookVector(bookId, embedder.model)
+        embedSubjects(bookId, embedder, embedDim)
+    }
+
+    /** Embeds the book's subjects that have no vector from this model yet; they're few and short. */
+    fun embedSubjects(bookId: Long, embedder: Embedder, embedDim: Int = DEFAULT_DIM) {
+        val missing = store.subjectsMissingVector(bookId, embedder.model, embedDim)
+        if (missing.isEmpty()) return
+        val vectors = embedder.embedDocuments(missing).map { Quantizer.quantize(Quantizer.truncate(it, embedDim)) }
+        store.saveSubjectVectors(bookId, embedder.model, missing.zip(vectors))
     }
 
     companion object {

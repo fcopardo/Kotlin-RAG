@@ -11,7 +11,13 @@ class FakeSummarizer(
     private val padTo: Map<SummaryLevel, Int> = emptyMap(),
     private val failAfter: Int? = null,
     private val output: ((SummaryTask) -> String)? = null,
+    /** What [complete] answers (e.g. subject lines); prompts are kept in [prompts]. */
+    private val completion: String = "",
 ) : Summarizer {
+    val prompts = mutableListOf<String>()
+
+    override fun complete(system: String, prompt: String, maxTokens: Int): String = completion.also { prompts += prompt }
+
     val tasks = mutableListOf<SummaryTask>()
 
     override fun summarize(task: SummaryTask): String {

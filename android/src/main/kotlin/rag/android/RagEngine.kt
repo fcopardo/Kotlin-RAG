@@ -39,6 +39,11 @@ class RagEngine(
     dbFile: File,
     private val embedder: Embedder? = null,
     private val embedDim: Int = Indexer.DEFAULT_DIM,
+    /**
+     * RAM for cached 1-bit vectors. The default 16 MB holds ~190k paragraphs (~115 books); on the
+     * S25, 100 books searched in 38 ms with it and in 414 ms with 4 MB, so small phones use it too.
+     */
+    private val bitsCacheBytes: Long = Searcher.BITS_CACHE_BYTES,
 ) : Closeable {
 
     init {
@@ -88,9 +93,10 @@ class RagEngine(
         }
     }
 
-    suspend fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID): List<Hit> = locked {
-        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true).also { searcher = it }
-        s.search(query, k, bookId, mode)
+    /** [subject] limits the search to books about it (SPEC §8.5). */
+    suspend fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID, subject: String? = null): List<Hit> = locked {
+        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes).also { searcher = it }
+        s.search(query, k, bookId, mode, subject)
     }
 
     suspend fun books(): List<BookRow> = locked { store.books() }

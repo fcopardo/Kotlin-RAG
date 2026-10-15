@@ -22,6 +22,8 @@ import rag.embed.EmbeddingModel
 import rag.embed.Embedder
 import rag.embed.OllamaEmbedder
 import rag.embed.OnnxModels
+import rag.summarize.SubjectIndexer
+import rag.summarize.Subjects
 import rag.index.EmbedResult
 import rag.index.Indexer
 import rag.index.UnitKind
@@ -125,6 +127,7 @@ private class SearchCommand : CliktCommand(name = "search") {
     val k by option("--k", help = "Number of results").int().default(5)
     val book by option("--book", help = "Only this book id").long()
     val mode by option("--mode", help = "hybrid | lexical | vector").choice("hybrid", "lexical", "vector").default("hybrid")
+    val subject by option("--subject", help = "Only books about this subject (see `rag books`, `rag subjects`)")
     val json by option("--json", help = "Print results as JSON").flag()
     val noSummaries by option("--no-summaries", help = "Search paragraphs only").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
@@ -145,7 +148,7 @@ private class SearchCommand : CliktCommand(name = "search") {
         }
         val embedder = if (mode == "lexical" || model == null) null else embedderFor(model, ollamaUrl, onnxDir)
         val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
-            .search(query, k, book, Mode.valueOf(mode.uppercase()))
+            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject)
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use
@@ -169,6 +172,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
     val db by option("--db").required()
     val set by option("--set", help = "Evaluation set, one JSON question per line").file(mustExist = true, canBeDir = false).required()
     val book by option("--book", help = "Only this book id").long()
+    val answerBook by option("--answer-book", help = "The book the answers are in, when searching several (defaults to --book)").long()
     val k by option("--k", help = "Results considered per question").int().default(5)
     val mode by option("--mode", help = "all | hybrid | lexical | vector").choice("all", "hybrid", "lexical", "vector").default("all")
     val details by option("--details", help = "Show the rank of every question").flag()
@@ -188,7 +192,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
         val model = embedModel ?: scope.mapNotNull { it.embedModel }.distinct().singleOrNull()
         val embedder = model?.let { embedderFor(it, ollamaUrl, onnxDir) }
         val modes = if (mode == "all") listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID) else listOf(Mode.valueOf(mode.uppercase()))
-        val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits), questions, modes, k, book)
+        val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits), questions, modes, k, book, answerBook ?: book)
         val kinds = questions.groupingBy { it.kind }.eachCount().toSortedMap()
 
         echo("${questions.size} questions (${kinds.entries.joinToString { "${it.value} ${it.key}" }}), top $k")
@@ -209,6 +213,32 @@ private class EvalCommand : CliktCommand(name = "eval") {
             }
         }
     }
+}
+
+private class SubjectsCommand : CliktCommand(name = "subjects") {
+    override fun help(context: Context) = "Ask a local model what a book is about: weighted subjects for filtering searches."
+    val db by option("--db").required()
+    val book by option("--book", help = "Book id (see `rag books`)").long().required()
+    val summaryModel by option("--summary-model", help = "Ollama model that names the subjects").default(OllamaSummarizer.DEFAULT_MODEL)
+    val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
+    val onnxDir by onnxDirOption()
+
+    override fun run() = SqliteStore(db).use { store ->
+        val row = store.book(book) ?: throw UsageError("no book with id $book")
+        // Subject vectors for each model the book has, so a filter matches by meaning with any of them.
+        val embedders = row.models.mapNotNull { m ->
+            if ('@' in m.model && onnxDir == null) { echo("Skipping ${m.model} vectors (needs --onnx-dir)."); null }
+            else embedderFor(m.model, ollamaUrl, onnxDir) to m.dim
+        }
+        val subjects = SubjectIndexer(store, OllamaSummarizer(summaryModel, ollamaUrl), embedders).describe(book)
+        subjects.forEach { echo("  ${it.subject} (${weightName(it.weight)})") }
+    }
+}
+
+private fun weightName(weight: Double) = when {
+    weight >= Subjects.MAIN -> "main"
+    weight >= Subjects.TANGENTIAL -> "tangential"
+    else -> "broad"
 }
 
 private class SummarizeCommand : CliktCommand(name = "summarize") {
@@ -246,7 +276,9 @@ private class BooksCommand : CliktCommand(name = "books") {
         books.forEach { b ->
             val vectors = b.models.joinToString(", ") { "${it.model}@${it.dim}d ${it.status}" }.ifEmpty { "no embeddings" }
             val summaries = b.summaryModel?.let { "summaries ${it} ${b.summaryStatus}" } ?: "no summaries"
+            val subjects = store.subjects(b.id).joinToString(", ") { "${it.subject} (${weightName(it.weight)})" }.ifEmpty { "no subjects" }
             echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.format}, pages: ${b.pageKind}; chapters by ${b.chapterStrategy}; $vectors; $summaries]")
+            echo("    subjects: $subjects")
         }
     }
 }
@@ -298,7 +330,7 @@ private fun citation(kind: String, start: String, end: String): String = when {
 }
 
 fun main(args: Array<String>) {
-    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), BooksCommand(), DumpCommand())
+    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), SubjectsCommand(), BooksCommand(), DumpCommand())
     val exitCode = try {
         command.parse(args)
         0

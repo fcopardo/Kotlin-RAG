@@ -341,7 +341,7 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
 
-**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 is **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6 (detected by its missing `char_start` column). Phase 7 (§15.9) is **version 4**: `embedding` is keyed by `(unit_id, model)` and the new `book_model` table lists every model a book has. The migration rebuilds `embedding`, keeping every vector, and fills `book_model` from `book.embed_*`; old files are detected by `embedding`'s one-column primary key.
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 is **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6 (detected by its missing `char_start` column). Phase 7 (§15.9) is **version 4**: `embedding` is keyed by `(unit_id, model)` and the new `book_model` table lists every model a book has. The migration rebuilds `embedding`, keeping every vector, and fills `book_model` from `book.embed_*`; old files are detected by `embedding`'s one-column primary key. Subjects (§8.5) are **version 5**: the new tables `book_subject`, `subject_vector` and `book_vector`, created empty on open. Books indexed before keep no metadata subjects until they're re-indexed.
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -450,6 +450,65 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
 7. The `--json` CLI output is `Hit` serialized as is. This is the contract an LLM tool or MCP wrapper will use.
 
 The full chapter text is **not** returned. A caller that needs it gets it with `rag dump --chapter`.
+
+### 8.4 Many books in one DB (built 2026-10-15)
+Storage and indexing scale linearly: books are independent, identical paragraphs share vectors, and SQLite handles files of several GB. Search originally walked books one by one. That caused one bug and several costs that grew with the number of books. Fixed:
+
+1. **Keyword hits are ranked across books.** Per-book top-n lists used to be *concatenated*. Rank fusion scores by position, so book 1's hits always outranked book 2's. Now one FTS query ranks every book in scope (`ftsSearch(…, bookIds)`; summaries the same); BM25 over one FTS table is comparable across books.
+2. **One candidate pool.** The 1-bit first pass keeps the best 200 candidates over *all* books (Hamming distance ÷ dimension, since books may store different dimensions), then rescores them once. It used to keep 200 per book: 20,000 int8 reads per query at 100 books. Vectors that can't enter the full pool are skipped without allocating.
+3. **Bounded 1-bit cache.** Cached bits are an LRU bounded in bytes (`Searcher(bitsCacheBytes)`, default 16 MB ≈ 190k paragraphs ≈ 115 books like *Compose*). Books beyond it are read from SQLite on each query.
+4. **Book rows skip `book.text`.** `books()` and `book(id)` used to read every book's whole text, and ran once per search and once per hit: 116 ms at 100 books vs 11 ms without the text.
+5. **Best phrase inside a hit:** the phrase FTS query is narrowed to the paragraph's phrase ids (`rowid BETWEEN`), instead of matching every phrase of every book and filtering afterwards (15 ms per hit at 100 books).
+6. **Evaluation in a library:** `Evaluation.run(…, answerBookId)` and `rag eval --answer-book` count only hits from the book the answers are in. Otherwise page 17 of another book would "answer".
+
+Results are unchanged for a single book: the Android goldens are identical and the evaluation sets keep their numbers.
+
+**Measured** with `ScaleTest`. It uses synthetic books of 1,650 paragraphs each, built from the *Art of War* fixtures' sentences, so every query word is common in every book: a worst case for keyword search. Vectors come from FakeEmbedder, so the times cover the index, not a model. Desktop (M-series Mac):
+
+| Books (paragraphs) | DB | Index | Keyword | Vector | Hybrid | 1-bit RAM |
+|---|---|---|---|---|---|---|
+| 1 (1.6k) | 3 MB | 0.3 s | 1.2 ms | 1.5 ms | 2.4 ms | 0.1 MB |
+| 100 (165k) | 308 MB | 23 s | 38 ms | 16 ms | 37 ms | 13 MB |
+| 1,000 (1.65M) | 3.1 GB | 5.4 min | 340 ms | 1.6 s (bits streamed); 120 ms with all bits in RAM (139 MB) | 1.8 s | 16 MB (bound) |
+
+On the Galaxy S25, 100 books (`RagEngineBenchmark#libraryScale`): keyword 88–94 ms. Vector 38 ms with the 16 MB cache, against 414 ms with a 4 MB cache, which streams most books. Both phone tiers therefore use 16 MB; it's small next to either model.
+
+**Distractors** (`DistractorEvalTest`, mxbai): each evaluation set in a 4-book library (*Compose*, *Kotlin for Android Developers*, *CtCI*, *Art of War*), where only its own book can answer. Recall is unchanged: *Compose* 0.55 / 0.80 / 0.80 (keyword / vector / hybrid) alone and in the library; *Art of War* 0.55 / 0.80 / 0.75 alone and 0.55 / 0.80 / 0.80 in the library.
+
+**Not built, and when to build it:**
+- **Routing** (search only the books whose vector or subjects are closest to the question): recall doesn't drop at 4 books, so it stays off. Revisit when a larger distractor set shows a loss.
+- **Searching books in parallel:** it would keep the per-book work and only spread it across cores. It would also need several SQLite connections, and on phones costs battery. One global query and pool removed the work instead.
+- **IVF in SQLite** (a cluster id per vector, centroids in RAM, read only the probed clusters) or a multi-threaded 1-bit scan: at 1,000 books the bounded cache streams 1.4M rows per query (1.6 s), and keeping all bits in RAM costs 139 MB. Build it when libraries of several hundred books become a goal, especially on phones.
+
+### 8.5 Book subjects (built 2026-10-15)
+What each book is about, so searches can be limited to a subject (`rag search --subject`, `RagEngine.search(subject = …)`), and as data for routing later.
+
+- **Stored** in `book_subject(book_id, subject, weight, source)`. `weight` is main 1.0 / tangential 0.5 / broad 0.25; `source` is `metadata` or `llm`. `rag books` lists them.
+- **From the file, at index time:**
+  - EPUB `dc:subject`. Library of Congress headings keep the topic: "War -- Early works to 1800" becomes "War".
+  - PDF `Keywords`, split on commas and semicolons. None of the three real PDFs here has any.
+- **From a local model:** `rag subjects --book N` (llama3.2:3b) reads the chapter titles, plus the book summary when there is one, and answers three labelled lines: `Main: …`, `Tangential: …`, `Broad: …`.
+  - **Prompt s3:**
+    - s1 ("list the subjects of this book") returned chapter topics, e.g. "State" and "Effects" for *Compose*.
+    - s2's `subject | weight` lines were mangled by the 3B model: weights first, numeric scores.
+    - s3 has one labelled line per weight and a worked example about gardening, so the example isn't copied.
+  - **s3's answers:**
+    - *Compose internals*: Jetpack Compose (main); Kotlin, Android (tangential); UI Development (broad).
+    - *Kotlin for Android Developers*: Android development, Kotlin programming (main); Java, APIs, Databases (tangential); Computer programming (broad).
+    - *CtCI*: Coding interviews, Algorithm design (main); Programming languages, Data structures (tangential); Computer science (broad).
+    - *Art of War*: Military strategy, War tactics, Ancient China (main); Chinese philosophy, Ancient history (tangential); Military science (broad).
+  - Re-running replaces the model's subjects; the file's own stay.
+- **Vectors:** each subject is embedded with each of the book's models (`subject_vector`) when embedding completes and after `rag subjects`. Each book also gets a **book vector**, the mean of its paragraph vectors per model (`book_vector`), for routing.
+- **Filter:** a book matches when a subject contains every word of the filter, ignoring case ("compose" matches "Jetpack Compose"), or when the filter's embedding is close enough to one of its subjects. Thresholds are per model, calibrated on the four books' subjects:
+
+  | Model | Unrelated pairs reach | Good matches start at | Threshold |
+  |---|---|---|---|
+  | `mxbai-embed-large` | 0.56 (gardening, cooking) | 0.67 (software → the programming books; military → Military science 0.74) | **0.65** |
+  | `nomic-embed-text` (int8) | 0.79 | 0.84 (job interviews → Coding interviews; history → Ancient history 0.86) | **0.83** |
+
+  - nomic's margin is narrower: "user interfaces" → *Compose* (0.80) is missed.
+  - Models without a calibrated value match subjects by name only.
+- The filter limits which books are searched. Keyword, vector, exact and summary search then run as usual inside them.
 
 ## 9. Code layout
 
@@ -621,6 +680,8 @@ Measured on *Jetpack Compose internals*: 205 pages, 374 KB of text, 1,649 paragr
 | Summaries, Phase 6: text + vectors + FTS | disk | ~156 KB (measured) |
 | Summaries, Phase 6: binary vectors | **RAM** during search | ~4 KB (measured) |
 | Summary model (`llama3.2:3b`) | RAM, only during `rag summarize` | 2.5 GB (measured) |
+| Subjects + their vectors + book vector, per model | disk | < 10 KB per book |
+| **Many books:** 1-bit vectors of all books searched | **RAM**, LRU-bounded (§8.4) | 16 MB at most (≈ 115 books); beyond it, read from disk per query |
 
 For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy of the text per unit would double the text storage. Storing unit keys as text, with a unique index, cost about 470 KB more than deriving them (2.94 MB → 2.35 MB at 256 dims). At 256 dimensions the vectors take ~0.6 MB and 53 KB of RAM. The embedding model is the largest memory cost by far: `mxbai-embed-large` takes ~687 MB in Ollama (`nomic-embed-text` ~370 MB), and it's needed only while indexing and to embed each query. Embedding the whole book takes 32 s with mxbai and 16 s with nomic.
 

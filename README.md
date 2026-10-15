@@ -127,6 +127,7 @@ rag search --db <file> -q "<question or text>" [options]
 | `-q`, `--query` | required | What to look for: a question, keywords, or a sentence copied from the book. |
 | `--k` | `5` | Number of results. |
 | `--book` | all books | Only search this book id. |
+| `--subject` | all books | Only books about this subject, by name or meaning (see [`rag subjects`](#rag-subjects-what-a-book-is-about)). |
 | `--mode` | `hybrid` | `hybrid` (keywords + meaning), `lexical` (keywords only, no Ollama needed) or `vector` (meaning only). |
 | `--json` | off | Print results as JSON, for scripts and LLM tools. |
 | `--embed-model` | the model the books were embedded with | Override the query embedding model. |
@@ -180,12 +181,14 @@ or `location` (`loc 37`: fixed-size chunks of an EPUB without a page list).
 ### `rag eval`: measure search quality
 
 ```bash
-rag eval --db <file> --set <questions.jsonl> [--book <id>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
+rag eval --db <file> --set <questions.jsonl> [--book <id>] [--answer-book <id>] [--k 5] [--mode all|hybrid|lexical|vector] [--details] [--lexical-weight 0.5] [--rrf-k 5]
 ```
 
 Runs a set of questions with known answers and reports, per mode: recall@k (share of questions
 whose answer page is in the top k), MRR, chapter recall, and recall per question kind.
-`--details` shows each question's rank. Each line of the set is one question:
+`--details` shows each question's rank. In a DB with several books, `--answer-book` names the
+book the answers are in: the search covers every book (or `--book`), but only hits from that book
+count. Each line of the set is one question:
 
 ```json
 {"id":"q02","query":"positional memoization","expectedPages":[17,18],"expectedChapter":"1. Composable functions","kind":"keyword"}
@@ -194,7 +197,7 @@ whose answer page is in the top k), MRR, chapter recall, and recall per question
 Instead of (or besides) `expectedPages`, a question can give `expectedAnchor`: a short phrase from
 the answer passage, matched inside the hit's paragraph. Anchors work across formats and editions.
 `kind` is free text; the repository's sets use `keyword` and `paraphrase` (a question that shares
-no content words with its answer). Sets in [src/test/resources/eval/](src/test/resources/eval/):
+no content words with its answer). Sets in [integration-tests/src/test/resources/eval/](integration-tests/src/test/resources/eval/):
 
 | Set | Book | Hybrid recall@5 (default settings) |
 |---|---|---|
@@ -220,13 +223,29 @@ never push answers to specific questions out of the results.
 - Interrupted runs resume where they stopped; `--redo` or another model starts over.
 - `rag dump --db <file> --book <id> --summaries` prints them; `rag search --no-summaries` leaves them out.
 
+### `rag subjects`: what a book is about
+
+```bash
+rag subjects --db <file> --book <id> [--summary-model llama3.2:3b] [--onnx-dir <dir>]
+```
+
+Asks a small local model to file the book in a catalog, from its chapter titles (and its summary,
+if `rag summarize` ran): main subjects, tangential ones, and the broad field. For *Jetpack Compose
+internals* it answers Jetpack Compose (main), Kotlin and Android (tangential), UI Development
+(broad). EPUBs also bring their own subjects (`dc:subject`), stored at index time.
+
+`rag search --subject <words>` then searches only the matching books: by name ("compose" finds
+"Jetpack Compose"), or by meaning with mxbai and nomic ("software" finds the programming books,
+"military" finds *Military science*). Takes a few seconds per book; re-running replaces the model's
+subjects.
+
 ### `rag books`: list books
 
 ```bash
 rag books --db <file>
 ```
 
-Shows each book's id, title, how its chapters were found, and its embedding status.
+Shows each book's id, title, how its chapters were found, its embedding models, and its subjects.
 
 ### `rag dump`: look inside a book
 
@@ -265,6 +284,11 @@ Measured on a 205-page technical book (374 KB of text, 1,649 paragraphs):
 Compact vectors agree with full-precision search on 89% of the top-10 results, and give the same
 recall on the evaluation set; see SPEC.md §11.
 
+**Many books in one DB** (SPEC.md §8.4): disk grows ~3 MB per book of this size. Search keeps at most
+16 MB of 1-bit vectors in RAM (about 115 such books); beyond that it reads them from disk per query.
+Measured with synthetic 1,650-paragraph books, desktop: 100 books search in ~40 ms; 1,000 books
+(3.1 GB) in ~1.8 s. On a Galaxy S25, 100 books take ~90 ms (hybrid).
+
 ## Development
 
 ```bash
@@ -293,6 +317,8 @@ environment variables:
 | `RAG_SUMMARY_MODEL=llama3.2:3b` | With `RAG_BOOK_PDF` and `RAG_OLLAMA=1`: summarizes the book and checks word caps, grounding and summary hits (~4 minutes). |
 | `RAG_ONNX_MODEL_DIR=models/mxbai-embed-large-v1` | With `RAG_OLLAMA=1`: ONNX Runtime vs Ollama parity for mxbai (the on-device path). Needs `vocab.txt` and `onnx/model.onnx` + `onnx/model_quantized.onnx` from [mixedbread-ai/mxbai-embed-large-v1](https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1) (Apache-2.0); `models/` is git-ignored. |
 | `RAG_KOTLIN_PDF`, `RAG_CTCI_PDF` | Structure tests against *Kotlin for Android Developers* (Antonio Leiva) and *Cracking the Coding Interview*, 6th ed. (Gayle Laakmann McDowell), from your own copies. |
+| `RAG_ONNX_NOMIC_DIR=models/nomic-embed-text-v1.5` | With `RAG_OLLAMA=1`: the same parity test for nomic, the small-phone model. |
+| `RAG_SCALE=1,100,1000` | Search cost as synthetic books are added to one DB (`RAG_SCALE_PARAGRAPHS` per book, `RAG_SCALE_DIR` keeps the DB). 1,000 books take ~6 minutes and 3 GB. |
 
 The EPUB tests use two public-domain editions of *The Art of War* committed in
 [integration-tests/src/test/resources/epub/](integration-tests/src/test/resources/epub/) (sources and licenses in its README), so they run anywhere;

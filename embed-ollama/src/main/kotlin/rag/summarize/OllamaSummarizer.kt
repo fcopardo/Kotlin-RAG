@@ -38,9 +38,13 @@ class OllamaSummarizer(
         }
     }
 
-    override fun summarize(task: SummaryTask): String {
-        val body = json.encodeToString(Request(model, Prompts.SYSTEM, Prompts.user(task), stream = false,
-            options = Options(temperature = 0.0, seed = 42, numCtx = 4096, numPredict = task.maxWords * 2)))
+    override fun summarize(task: SummaryTask): String = generate(Prompts.SYSTEM, Prompts.user(task), task.maxWords * 2)
+
+    override fun complete(system: String, prompt: String, maxTokens: Int): String = generate(system, prompt, maxTokens)
+
+    private fun generate(system: String, prompt: String, numPredict: Int): String {
+        val body = json.encodeToString(Request(model, system, prompt, stream = false,
+            options = Options(temperature = 0.0, seed = 42, numCtx = 4096, numPredict = numPredict)))
         var last: String? = null
         for (attempt in 0 until maxAttempts) {
             if (attempt > 0) sleep(1000L shl (attempt - 1))
