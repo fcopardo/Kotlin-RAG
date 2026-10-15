@@ -449,28 +449,28 @@ data class ChapterRef(val number: Int, val title: String, val pageStart: Int, va
 
 The full chapter text is **not** returned. A caller that needs it gets it with `rag dump --chapter`.
 
-## 9. Code layout (suggested)
+## 9. Code layout
+
+Gradle modules since Phase 7 step 3 (§15.3). Package names didn't change when files moved into modules.
 
 ```
-src/main/kotlin/rag/
-  Main.kt                 CLI
-  extract/PdfExtractor.kt     §5.1
-  epub/                       §16 (Phase 8): container/OPF/nav reading, DRM check, XHTML → book text
-  extract/Normalizer.kt       §5.2
-  structure/ChapterDetector.kt  §5.3 (OutlineStrategy, TocStrategy, Fallback)
-  structure/Segmenter.kt      §5.4–5.5
-  embed/Embedder.kt           §8.1 interface + FakeEmbedder (test fixtures)
-  embed/OllamaEmbedder.kt     §8.1
-  embed/Quantizer.kt          §5.6 truncation, int8, binary, Hamming
-  index/UnitKeys.kt           keys (§6)
-  index/Indexer.kt            index + embed orchestration
-  store/SqliteStore.kt        §7
-  search/Searcher.kt          §8
-  summarize/Summarizer.kt     §5.7 interface, OllamaSummarizer, prompts, output cleaning
-  summarize/SummaryTree.kt    §5.7.2 section packing and reduction (pure)
-  summarize/SummaryIndexer.kt §5.7.4–5.7.5 generation, storage, embedding, resume
+core/src/main/kotlin/rag/
+  BookSource.kt, BookReader.kt, StructuredBook.kt   format detection, BookSource discovery (§16.6)
+  extract/   Normalizer (§5.2), BoilerplateRemover (§5.1), Footnotes, CodeListings, ExtractedBook
+  structure/ ChapterPlan, OutlineChapters, TocParser, TocLocator, Chapters (§5.3), Segmenter (§5.4–5.5)
+  embed/     Embedder, EmbeddingModel, Vectors, Quantizer (§5.6, §8.1)
+  index/     UnitKeys (§6), Indexer
+  store/     SqliteStore (§7) over SqlConnection / SqlDriver (§15.2)
+  search/    Searcher, Fusion, Evaluation (§8, §11)
+  summarize/ Summarizer, Prompts, SummaryText, SummaryTree, SummaryIndexer (§5.7)
+pdf-pdfbox/   PdfBookSource, PdfExtractor, ChapterDetector, TocLineReader
+epub/         EpubBookSource, EpubPackage, EpubText (§16)
+store-jdbc/   JdbcSqlDriver; store-bundled/  BundledSqlDriver
+embed-ollama/ OllamaEmbedder, OllamaSummarizer; embed-onnx/  OnnxEmbedder, WordPieceTokenizer
+cli/          Main.kt (the `rag` command)
+integration-tests/  cross-module tests, fixture books and evaluation sets
 ```
-Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) free of PDFBox, SQL and HTTP, so it can be unit-tested on plain strings.
+Keep pure logic (normalization, segmentation, TOC parsing, key generation, RRF) free of PDFBox, SQL and HTTP, so it can be unit-tested on plain strings. The core module enforces it: it has no such dependencies.
 
 ## 10. Phases (each one ends with passing tests)
 
@@ -679,19 +679,23 @@ Normalization, boilerplate/footnote/code-listing cleanup, TOC parsing and locati
   - Pooling is per model config: CLS for `mxbai-embed-large`, mean for `nomic-embed-text`. Prefixes, truncation and quantization stay as in §5.6.
   - The ONNX session loads the model memory-mapped, and inference runs in batches off the main thread.
 
-### 15.3 Module layout
+### 15.3 Module layout (built, step 3)
 
-```
-core/                 pure Kotlin: pipeline, keys, quantizer, fusion, search, eval, interfaces
-store-sqlite/         Store on androidx.sqlite (bundled driver), JVM + Android
-pdf-pdfbox/           BookSource for PDF on PDFBox (desktop)
-pdf-pdfbox-android/   BookSource for PDF on PdfBox-Android
-epub/                 BookSource for EPUB on jsoup + java.util.zip (JVM and Android, §16)
-embed-ollama/         OllamaEmbedder, OllamaSummarizer
-embed-onnx/           OnnxEmbedder + WordPiece tokenizer (JVM and Android artifacts)
-cli/                  the `rag` command (desktop)
-android/              Android library (AAR): a `RagEngine` facade, plus a sample app
-```
+| Module | Contents | Dependencies | Android |
+|---|---|---|---|
+| `core` | pipeline, keys, quantizer, store logic over `SqlConnection`, search, fusion, evaluation, summary tree; test fixtures `FakeEmbedder`, `FakeSummarizer` | kotlinx-serialization | as is |
+| `pdf-pdfbox` | `PdfBookSource`, `PdfExtractor`, `ChapterDetector`, `TocLineReader`; test fixtures `TestPdfs`, `SampleBook` | PDFBox | needs `pdf-pdfbox-android` (PdfBox-Android) |
+| `epub` | `EpubBookSource`, `EpubPackage`, `EpubText`; test fixture `TestEpubs` | jsoup | as is |
+| `store-jdbc` | `JdbcSqlDriver` | sqlite-jdbc | no (desktop) |
+| `store-bundled` | `BundledSqlDriver` | androidx sqlite-bundled | yes |
+| `embed-ollama` | `OllamaEmbedder`, `OllamaSummarizer` | `java.net.http` | no: Android has no `java.net.http` (would need another HTTP client) |
+| `embed-onnx` | `OnnxEmbedder`, `WordPieceTokenizer` | ONNX Runtime, **compile-only** | yes, with `onnxruntime-android` |
+| `cli` | the `rag` command | all desktop modules, clikt | no |
+| `integration-tests` | tests combining modules, fixture EPUBs, evaluation sets; `testBundledSqlite` | everything | no |
+| `pdf-pdfbox-android`, `android` | step 5 | | |
+
+- **Plugins via `ServiceLoader`:** format and driver modules register their `BookSource` / `SqlDriver` in `META-INF/services`. `BookReader()` and `SqlDriver.default()` use whatever is on the classpath, so the core never depends on PDFBox, jsoup or a SQLite driver. On Android, R8 must keep those service entries.
+- **Extractor ids:** each `BookSource` reports its own (`pdfbox-3.0.8/norm-v1`, `jsoup-1.23.2/norm-v1`). Before the split, EPUBs were recorded with PDFBox's version.
 
 `RagEngine` (Android) exposes `suspend` functions (`index`, `embed`, `search`) and runs blocking work on `Dispatchers.IO`. It reports progress per page and per batch, and checks for cancellation between batches. That fits `WorkManager` for indexing in the background.
 
@@ -723,7 +727,7 @@ Vectors are comparable only if they come from the same model weights and the sam
 ### 15.7 Steps (each ends with passing tests; the desktop CLI keeps working throughout)
 1. ✅ Introduce `BookSource` with the PDFBox adapter (shared with Phase 8, step 1). No behavior change: all current tests pass.
 2. ✅ The two-driver store (above). Real index files from before the change give identical evaluation output on both drivers (*Compose* with summaries 0.80, *Art of War* 0.75 / 0.65).
-3. Split the Gradle modules as in §15.3.
+3. ✅ Split the Gradle modules as in §15.3. All 207 tests pass, on both SQL drivers, with every opt-in test enabled.
 4. ✅ Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model. Done **before** step 3, because parity decides index compatibility between desktop and phone, while the module split is mechanical.
 5. Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests on an emulator.
 6. Measure the reference-phone numbers from §15.6, record them, and choose the phone model.

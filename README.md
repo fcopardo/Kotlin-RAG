@@ -40,8 +40,8 @@ The full design, decisions and measurements are in [SPEC.md](SPEC.md).
 ./gradlew installDist
 ```
 
-This produces the launcher at `build/install/rag/bin/rag`. The examples below call it `rag`;
-add `build/install/rag/bin` to your `PATH`, or use the full path.
+This produces the launcher at `cli/build/install/rag/bin/rag`. The examples below call it `rag`;
+add `cli/build/install/rag/bin` to your `PATH`, or use the full path.
 
 ## Quick start
 
@@ -263,8 +263,8 @@ recall on the evaluation set; see SPEC.md §11.
 ## Development
 
 ```bash
-./gradlew test               # desktop SQLite driver (sqlite-jdbc)
-./gradlew testBundledSqlite  # the same tests on androidx's bundled SQLite, the Android driver
+./gradlew test               # every module; SQLite through sqlite-jdbc
+./gradlew testBundledSqlite  # the integration tests again on androidx's bundled SQLite (the Android driver)
 ./gradlew check              # both
 ```
 
@@ -287,22 +287,22 @@ their evaluation needs `RAG_OLLAMA=1`.
 RAG_OLLAMA=1 RAG_BOOK_PDF=~/Downloads/composeinternals.pdf ./gradlew test
 ```
 
-Code layout:
+Gradle modules (package names are the same in all of them):
 
 ```
-src/main/kotlin/rag/
-  Main.kt            CLI
-  BookReader.kt      PDF → chapters → paragraphs → phrases
-  BookSource.kt      format detection; PDF and EPUB sources share everything after it
-  extract/           PDF text, header/footer/footnote/code-listing cleanup, normalization
-  epub/              EPUB package, navigation, DRM checks, XHTML → text
-  structure/         chapter detection (bookmarks, TOC), segmentation
-  embed/             Ollama client, ONNX Runtime embedder + WordPiece tokenizer, truncation and quantization
-  index/             unit keys, indexing and embedding
-  summarize/         summary tree, prompts, Ollama summarizer
-  store/             SQLite schema and queries
-  search/            exact, BM25 and vector search, rank fusion
+core/               pipeline, chapters, segmentation, keys, store logic, search, evaluation, summary tree
+pdf-pdfbox/         PDF books (PDFBox)
+epub/               EPUB books (jsoup)
+store-jdbc/         SQLite driver for desktop (sqlite-jdbc)
+store-bundled/      SQLite driver for Android (androidx bundled)
+embed-ollama/       embeddings and summaries through Ollama
+embed-onnx/         in-process embeddings (ONNX Runtime) + WordPiece tokenizer
+cli/                the `rag` command
+integration-tests/  end-to-end tests, fixture EPUBs, evaluation sets
 ```
+
+The core has no dependency on PDFBox, jsoup, SQLite drivers or HTTP; format readers and drivers
+plug in through `META-INF/services`.
 
 ## Status and roadmap
 
