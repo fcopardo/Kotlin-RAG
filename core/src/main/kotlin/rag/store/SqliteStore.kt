@@ -25,7 +25,17 @@ data class BookRow(
     val summaryPrompt: String? = null,
     /** "none", "partial" or "complete" (SPEC §5.7.4). */
     val summaryStatus: String = "none",
-)
+    /**
+     * Every embedding model the book has vectors for, first added first (SPEC §15.9). [embedModel],
+     * [embedDim] and [embedStatus] are the first of them, the book's primary model.
+     */
+    val models: List<BookModel> = emptyList(),
+) {
+    fun model(name: String): BookModel? = models.firstOrNull { it.model == name }
+}
+
+/** One embedding model's vectors on a book: dimension and "partial" or "complete". */
+data class BookModel(val model: String, val dim: Int, val status: String)
 
 data class StoredUnit(
     val id: Long,
@@ -86,7 +96,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         db.execute("PRAGMA journal_mode = WAL")
         SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
         migrate()
-        // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3.
+        // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4.
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -118,6 +128,15 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             // The version 1-2 placeholder table is always empty.
             update("DROP TABLE summary")
             update(SUMMARY_TABLE)
+        }
+        // Version 3 → 4 (SPEC §15.9): embeddings keyed by (unit, model); every model listed in book_model.
+        val embeddingKey = query("PRAGMA table_info(embedding)") { it.string("name")!! to it.int("pk") }.filter { it.second > 0 }
+        if (embeddingKey.size == 1) transaction {
+            update("ALTER TABLE embedding RENAME TO embedding_v3")
+            update(EMBEDDING_TABLE)
+            update("INSERT INTO embedding SELECT unit_id, model, dim, scale, vec_i8, vec_bits FROM embedding_v3")
+            update("DROP TABLE embedding_v3")
+            update("INSERT OR IGNORE INTO book_model(book_id, model, dim, status) SELECT id, embed_model, embed_dim, embed_status FROM book WHERE embed_model IS NOT NULL")
         }
     }
 
@@ -153,8 +172,18 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         query("SELECT id FROM book WHERE file_sha256 = ?", sha256) { it.long(1) }.firstOrNull()
 
     fun book(id: Long): BookRow? = query("SELECT * FROM book WHERE id = ?", id, mapper = ::bookRow).firstOrNull()
+        ?.let { it.copy(models = models(it.id)) }
 
-    fun books(): List<BookRow> = query("SELECT * FROM book ORDER BY id", mapper = ::bookRow)
+    fun books(): List<BookRow> {
+        val models = query("SELECT * FROM book_model ORDER BY rowid") { it.long("book_id") to bookModel(it) }
+            .groupBy({ it.first }, { it.second })
+        return query("SELECT * FROM book ORDER BY id", mapper = ::bookRow).map { it.copy(models = models[it.id].orEmpty()) }
+    }
+
+    private fun models(bookId: Long): List<BookModel> =
+        query("SELECT * FROM book_model WHERE book_id = ? ORDER BY rowid", bookId, mapper = ::bookModel)
+
+    private fun bookModel(r: SqlRow) = BookModel(r.string("model")!!, r.int("dim"), r.string("status")!!)
 
     fun bookText(id: Long): String =
         query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.firstOrNull()
@@ -267,12 +296,12 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
 
     // --- embeddings ---
 
-    fun paragraphsMissingEmbedding(bookId: Long): List<ParagraphToEmbed> = query(
+    fun paragraphsMissingEmbedding(bookId: Long, model: String): List<ParagraphToEmbed> = query(
         """SELECT u.id, u.hash, u.char_start, u.char_end, u.is_code, c.title
            FROM unit u JOIN unit c ON c.id = u.parent_id
-           LEFT JOIN embedding e ON e.unit_id = u.id
+           LEFT JOIN embedding e ON e.unit_id = u.id AND e.model = ?
            WHERE u.book_id = ? AND u.kind = 'g' AND e.unit_id IS NULL ORDER BY u.id""",
-        bookId,
+        model, bookId,
     ) { ParagraphToEmbed(it.long(1), longToHash(it.long(2)), it.int(3), it.int(4), it.int(5) == 1, it.string(6) ?: "") }
 
     /** Copies an existing embedding of the same text, model and dimension (SPEC §6.3). */
@@ -289,24 +318,45 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             vectors.map { (unitId, v) -> listOf(unitId, model, v.dim, v.scale, v.int8, Quantizer.bitsToBlob(v.bits)) })
     }
 
-    fun clearEmbeddings(bookId: Long) {
-        update("DELETE FROM embedding WHERE unit_id IN (SELECT id FROM unit WHERE book_id = ?)", bookId)
+    /** Drops one model's vectors from a book, or every model's when [model] is null. */
+    fun clearEmbeddings(bookId: Long, model: String? = null) = transaction {
+        if (model == null) {
+            update("DELETE FROM embedding WHERE unit_id IN (SELECT id FROM unit WHERE book_id = ?)", bookId)
+            update("DELETE FROM book_model WHERE book_id = ?", bookId)
+        } else {
+            update("DELETE FROM embedding WHERE model = ? AND unit_id IN (SELECT id FROM unit WHERE book_id = ?)", model, bookId)
+            update("DELETE FROM book_model WHERE book_id = ? AND model = ?", bookId, model)
+        }
+        syncPrimary(bookId)
     }
 
-    fun setEmbedState(bookId: Long, model: String?, dim: Int?, status: String) {
-        update("UPDATE book SET embed_model = ?, embed_dim = ?, embed_status = ? WHERE id = ?", model, dim, status, bookId)
+    /** Records a model's progress on a book; the first model added is the book's primary one. */
+    fun setEmbedState(bookId: Long, model: String, dim: Int, status: String) = transaction {
+        update(
+            """INSERT INTO book_model(book_id, model, dim, status) VALUES (?,?,?,?)
+               ON CONFLICT(book_id, model) DO UPDATE SET dim = excluded.dim, status = excluded.status""",
+            bookId, model, dim, status,
+        )
+        syncPrimary(bookId)
     }
 
-    /** Binary vectors of a book's paragraphs, for the in-memory first pass. */
-    fun binaryVectors(bookId: Long): List<Pair<Long, LongArray>> = query(
-        "SELECT e.unit_id, e.vec_bits FROM embedding e JOIN unit u ON u.id = e.unit_id WHERE u.book_id = ? ORDER BY e.unit_id",
-        bookId,
+    /** book.embed_* mirror the primary model, so readers that know one model per book still work. */
+    private fun syncPrimary(bookId: Long) {
+        val primary = models(bookId).firstOrNull()
+        update("UPDATE book SET embed_model = ?, embed_dim = ?, embed_status = ? WHERE id = ?",
+            primary?.model, primary?.dim, primary?.status ?: "none", bookId)
+    }
+
+    /** Binary vectors of a book's paragraphs from one model, for the in-memory first pass. */
+    fun binaryVectors(bookId: Long, model: String): List<Pair<Long, LongArray>> = query(
+        "SELECT e.unit_id, e.vec_bits FROM embedding e JOIN unit u ON u.id = e.unit_id WHERE u.book_id = ? AND e.model = ? ORDER BY e.unit_id",
+        bookId, model,
     ) { it.long(1) to Quantizer.blobToBits(it.bytes(2)) }
 
-    fun vectors(unitIds: Collection<Long>): List<StoredVector> {
+    fun vectors(unitIds: Collection<Long>, model: String): List<StoredVector> {
         if (unitIds.isEmpty()) return emptyList()
         val marks = unitIds.joinToString(",") { "?" }
-        return query("SELECT unit_id, scale, vec_i8, vec_bits FROM embedding WHERE unit_id IN ($marks)", *unitIds.toTypedArray()) {
+        return query("SELECT unit_id, scale, vec_i8, vec_bits FROM embedding WHERE model = ? AND unit_id IN ($marks)", model, *unitIds.toTypedArray()) {
             StoredVector(it.long(1), it.float(2), it.bytes(3), Quantizer.blobToBits(it.bytes(4)))
         }
     }
@@ -358,8 +408,9 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             vectors.map { (id, v) -> listOf(model, v.dim, v.scale, v.int8, Quantizer.bitsToBlob(v.bits), id) })
     }
 
-    fun summaryBinaryVectors(bookId: Long): List<Pair<Long, LongArray>> = query(
-        "SELECT id, vec_bits FROM summary WHERE book_id = ? AND vec_bits IS NOT NULL ORDER BY id", bookId,
+    /** Summaries carry one model's vectors (the book's primary model at the time they were embedded). */
+    fun summaryBinaryVectors(bookId: Long, model: String): List<Pair<Long, LongArray>> = query(
+        "SELECT id, vec_bits FROM summary WHERE book_id = ? AND embed_model = ? AND vec_bits IS NOT NULL ORDER BY id", bookId, model,
     ) { it.long(1) to Quantizer.blobToBits(it.bytes(2)) }
 
     fun summaryVectors(ids: Collection<Long>): List<StoredVector> {
@@ -420,7 +471,19 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 4
+
+        /** SPEC §15.9: one vector per paragraph and model. */
+        private val EMBEDDING_TABLE = """
+            CREATE TABLE IF NOT EXISTS embedding (
+              unit_id INTEGER NOT NULL REFERENCES unit(id) ON DELETE CASCADE,
+              model TEXT NOT NULL,
+              dim INTEGER NOT NULL,
+              scale REAL NOT NULL,
+              vec_i8 BLOB NOT NULL,
+              vec_bits BLOB NOT NULL,
+              PRIMARY KEY (unit_id, model)
+            )""".trimIndent()
 
         /** SPEC §7, Phase 6: generated summaries stored with their text and the span they cover. */
         private val SUMMARY_TABLE = """
@@ -493,13 +556,13 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             CREATE INDEX IF NOT EXISTS unit_hash ON unit(hash);
             CREATE INDEX IF NOT EXISTS unit_parent ON unit(parent_id, ordinal);
             CREATE INDEX IF NOT EXISTS unit_book_kind ON unit(book_id, kind);
-            CREATE TABLE IF NOT EXISTS embedding (
-              unit_id INTEGER PRIMARY KEY REFERENCES unit(id) ON DELETE CASCADE,
+            $EMBEDDING_TABLE;
+            CREATE TABLE IF NOT EXISTS book_model (
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
               model TEXT NOT NULL,
               dim INTEGER NOT NULL,
-              scale REAL NOT NULL,
-              vec_i8 BLOB NOT NULL,
-              vec_bits BLOB NOT NULL
+              status TEXT NOT NULL CHECK (status IN ('partial','complete')),
+              PRIMARY KEY (book_id, model)
             );
             $SUMMARY_TABLE;
             CREATE VIRTUAL TABLE IF NOT EXISTS para_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');

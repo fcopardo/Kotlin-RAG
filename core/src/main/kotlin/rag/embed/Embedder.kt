@@ -44,8 +44,8 @@ data class EmbeddingModel(
 
         private val known = listOf(NOMIC_EMBED_TEXT, MXBAI_EMBED_LARGE).associateBy { it.name }
 
-        /** Known config for [name], or one without prefixes. */
-        fun forName(name: String): EmbeddingModel = known[name.substringBefore(':')] ?: EmbeddingModel(name)
+        /** Known config for [name] (ignoring an Ollama tag or an "@variant"), or one without prefixes. */
+        fun forName(name: String): EmbeddingModel = known[name.substringBefore(':').substringBefore('@')] ?: EmbeddingModel(name)
     }
 }
 

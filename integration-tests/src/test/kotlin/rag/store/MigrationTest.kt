@@ -1,6 +1,11 @@
 package rag.store
 
 import org.junit.jupiter.api.io.TempDir
+import rag.SampleBook
+import rag.embed.FakeEmbedder
+import rag.index.Indexer
+import rag.search.Mode
+import rag.search.Searcher
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -32,5 +37,36 @@ class MigrationTest {
         }
         // Opening again is a no-op.
         SqliteStore(path).use { assertEquals(listOf("1", "2"), it.pageLabels(1)) }
+    }
+
+    @Test
+    fun `a version 3 database migrates to several models per book`(@TempDir dir: File) {
+        val path = File(dir, "v3.db").path
+        val pdf = SampleBook.write(File(dir, "sample.pdf"))
+        val before = SqliteStore(path).use { store ->
+            val bookId = Indexer(store).index(pdf, embedder = FakeEmbedder()).bookId
+            Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey } to bookId
+        }
+        // Back to the version 3 shape: one vector per unit, the model only on the book row.
+        SqlDriver.default().open(path).use { s ->
+            s.execute("ALTER TABLE embedding RENAME TO embedding_v4")
+            s.execute("""CREATE TABLE embedding (unit_id INTEGER PRIMARY KEY REFERENCES unit(id) ON DELETE CASCADE, model TEXT NOT NULL,
+                dim INTEGER NOT NULL, scale REAL NOT NULL, vec_i8 BLOB NOT NULL, vec_bits BLOB NOT NULL)""")
+            s.execute("INSERT INTO embedding SELECT * FROM embedding_v4")
+            s.execute("DROP TABLE embedding_v4")
+            s.execute("DROP TABLE book_model")
+            s.execute("PRAGMA user_version = 3")
+        }
+
+        SqliteStore(path).use { store ->
+            val book = store.book(before.second)!!
+            assertEquals(listOf(BookModel("fake-bow", 512, "complete")), book.models)
+            val key = store.db.query("PRAGMA table_info(embedding)") { it.string("name")!! to it.int("pk") }.filter { it.second > 0 }.map { it.first }
+            assertEquals(listOf("unit_id", "model"), key)
+            assertEquals(before.first, Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey })
+            assertEquals(SqliteStore.SCHEMA_VERSION, store.db.query("PRAGMA user_version") { it.int(1) }.single())
+        }
+        // Opening again is a no-op.
+        SqliteStore(path).use { assertEquals(1, it.book(before.second)!!.models.size) }
     }
 }

@@ -22,6 +22,10 @@ object Goldens {
         "terrain",
     )
 
+    /** Deterministic stand-ins for two embedding models: same results wherever they run. */
+    val MODEL_A = rag.embed.FakeEmbedder(model = "fake-a")
+    val MODEL_B = rag.embed.FakeEmbedder(dim = 512, model = "fake-b")
+
     /** One line per unit, in id order: key, kind, offsets, pages and title. */
     fun unitLines(store: SqliteStore, bookId: Long): List<String> =
         store.units(bookId).map { "${it.key} ${it.kind.code} ${it.start} ${it.end} ${it.pageStart} ${it.pageEnd} ${it.title.orEmpty()}" }
@@ -32,6 +36,10 @@ object Goldens {
     /** Paragraph keys of the top lexical hits: the part of search that needs no model. */
     fun lexicalKeys(searcher: Searcher, query: String, k: Int = 5): String =
         searcher.search(query, k, mode = Mode.LEXICAL).joinToString("|") { "${it.bookId}:${it.paragraph.unitKey}" }
+
+    /** Paragraph keys of the top vector hits for the searcher's model. */
+    fun vectorKeys(searcher: Searcher, query: String, k: Int = 5): String =
+        searcher.search(query, k, mode = Mode.VECTOR).joinToString("|") { "${it.bookId}:${it.paragraph.unitKey}" }
 
     fun sha256(text: String): String =
         MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }

@@ -63,6 +63,22 @@ class RagEngineDeviceTest {
                 assertEquals(goldens.getProperty("search.$i"), keys, "query '$query'")
             }
         }
+        // Each model the DB carries searches with its own vectors (SPEC §15.9).
+        for (model in listOf(Goldens.MODEL_A, Goldens.MODEL_B)) {
+            RagEngine(context, File(dir, "desktop.db"), model).use { engine ->
+                Goldens.QUERIES.forEachIndexed { i, query ->
+                    val keys = engine.search(query, mode = Mode.VECTOR).joinToString("|") { "${it.bookId}:${it.paragraph.unitKey}" }
+                    assertEquals(goldens.getProperty("vector.${model.model}.$i"), keys, "${model.model} '$query'")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun thisPhoneIsLargeTier() {
+        // The S25 reports ~10.9 GiB; the tier rules themselves are unit-tested (RagModelsTest).
+        val memory = RagModels.memory(context)
+        assertEquals(DeviceTier.LARGE, RagModels.tier(memory), "$memory")
     }
 
     @Test

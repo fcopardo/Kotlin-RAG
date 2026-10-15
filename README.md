@@ -104,12 +104,17 @@ rag index --file <pdf|epub> --db <file> [options]
 ### `rag embed`: (re)embed a book
 
 ```bash
-rag embed --db <file> --book <id> [--embed-model …] [--embed-dim …] [--ollama-url …]
+rag embed --db <file> --book <id> [--embed-model …] [--embed-dim …] [--add] [--onnx-dir <dir>] [--ollama-url …]
 ```
 
 Embeds the paragraphs that don't have a vector yet. Use it to finish an interrupted `index`, to
 embed a book indexed with `--no-embed`, or to switch model or dimensions (the old vectors are
 dropped first). Identical paragraphs are embedded once and share the vector.
+
+- `--add` keeps the book's other models, so it can be searched with any of them (`rag books`
+  lists them). Searches default to the first model added; pick another with `--embed-model`.
+- `--onnx-dir` embeds with ONNX Runtime from a model directory instead of Ollama (used for
+  phones' small-tier model, see [Android](#android)). `search` and `eval` take it too.
 
 ### `rag search`: find passages
 
@@ -325,12 +330,33 @@ plug in through `META-INF/services`.
 val engine = RagEngine(context, File(context.filesDir, "books.db"))      // keyword search only
 val hits = engine.search("attack by stratagem", k = 5)
 
-// With on-device embeddings (an ONNX model that passed the parity test, SPEC.md §15.4):
-val embedder = OnnxEmbedder(modelFile, WordPieceTokenizer.fromVocabFile(vocab),
-    EmbeddingModel.MXBAI_EMBED_LARGE, model = "mxbai-embed-large")
+// With on-device embeddings: the model depends on the phone's RAM (SPEC.md §15.9).
+val tier = RagModels.tier(RagModels.memory(context))   // LARGE at ≥ 6 GB, else SMALL
+val model = RagModels.model(tier)                      // which files the app must provide
+val embedder = RagModels.open(tier, File(modelsDir, model.directoryName))
 RagEngine(context, dbFile, embedder).use { it.index(bookFile) { done, total -> /* progress */ } }
 embedder.close() // the engine doesn't close the embedder: it can be shared
 ```
+
+| Tier | Model | Files (from Hugging Face) | On a Galaxy S25 |
+|---|---|---|---|
+| Large (≥ 6 GB RAM) | `mxbai-embed-large` int8 | `mixedbread-ai/mxbai-embed-large-v1`: `onnx/model_quantized.onnx` (337 MB), `vocab.txt` | 205-page book in ~1.8 min, peak 585 MB, recall@5 0.80 |
+| Small | `nomic-embed-text` int8 | `nomic-ai/nomic-embed-text-v1.5`: `onnx/model_quantized.onnx` (137 MB), `vocab.txt` | ~1.1 min, peak 384 MB, recall@5 0.75 |
+
+The library doesn't download models: ship or fetch these files in your app.
+
+A phone searches with its tier's model, so a desktop-built index needs vectors from that model.
+One DB can carry both:
+
+```bash
+rag index --db books.db --file book.pdf                     # mxbai through Ollama (large tier)
+rag embed --db books.db --book 1 --embed-model nomic-embed-text \
+    --onnx-dir models/nomic-embed-text-v1.5 --add          # nomic int8 through ONNX (small tier)
+```
+
+The small-tier vectors are built with the same ONNX file the phone uses, because nomic's int8
+build doesn't match Ollama's closely enough to share vectors (SPEC.md §15.9). On Apple silicon,
+`--onnx-dir` needs an arm64 JDK. Books without the phone's model are searched by keywords.
 
 All functions are `suspend` and run on `Dispatchers.IO`. Cancelling `index` or `embed` stops
 between embedding batches, and `embed(bookId)` resumes later. To keep memory down, index
@@ -346,10 +372,8 @@ module should merge service files: `packaging.resources.merges += "META-INF/serv
   size and the fusion weights.
 - **Done (Phase 6, optional):** chapter and book summaries made by a small local model, so
   questions like "what is chapter 5 about?" can be answered (SPEC.md §5.7).
-- **Phase 7 (steps 1–5 done):** desktop and Android from one code base, sharing the same index
-  file, with on-device embeddings through ONNX Runtime. The Android library passes its
-  instrumented tests on a phone. On a Galaxy S25, a 205-page book indexes with on-device
-  embeddings in about 2.3 minutes, a query embeds in 25 ms, and recall matches the desktop.
-  Peak memory with the model loaded (~600 MB) is still over the 400 MB target (SPEC.md §15.6).
+- **Done (Phase 7):** desktop and Android from one code base, sharing the same index file,
+  with on-device embeddings through ONNX Runtime. The embedding model depends on the phone's RAM;
+  the small tier stays under 400 MB while indexing (SPEC.md §15).
 - **Done (Phase 8):** EPUB input (EPUB 2 and 3, DRM-free), with chapters from the EPUB's own
   table of contents and citations by printed page where the EPUB has a page list (SPEC.md §16).

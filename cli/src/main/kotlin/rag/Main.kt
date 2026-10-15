@@ -19,7 +19,9 @@ import com.github.ajalt.clikt.parameters.types.file
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
 import rag.embed.EmbeddingModel
+import rag.embed.Embedder
 import rag.embed.OllamaEmbedder
+import rag.embed.OnnxModels
 import rag.index.EmbedResult
 import rag.index.Indexer
 import rag.index.UnitKind
@@ -33,6 +35,30 @@ import rag.store.SqliteStore
 import java.sql.SQLException
 import kotlin.system.exitProcess
 
+private fun CliktCommand.onnxDirOption() =
+    option("--onnx-dir", help = "Embed with ONNX Runtime from this model directory instead of Ollama (e.g. models/nomic-embed-text-v1.5)")
+        .file(mustExist = true, canBeFile = false)
+
+/**
+ * Ollama, or with [onnxDir] the ONNX build phones use (SPEC §15.9). Models only built with ONNX
+ * ("…@onnx-int8") need [onnxDir].
+ */
+private fun embedderFor(model: String, ollamaUrl: String, onnxDir: java.io.File?): Embedder {
+    if (onnxDir == null) {
+        if ('@' in model) throw UsageError("'$model' vectors come from an ONNX build: pass --onnx-dir with its files")
+        return OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
+    }
+    val onnx = OnnxModels.forName(model)
+        ?: throw UsageError("no ONNX build known for '$model' (known: ${OnnxModels.ALL.joinToString { it.storedName }})")
+    return try {
+        onnx.open(onnxDir)
+    } catch (e: UnsatisfiedLinkError) {
+        // ONNX Runtime ships natives for macOS arm64, Linux x64/arm64 and Windows x64 only.
+        throw UsageError("ONNX Runtime has no native library for this JVM (${System.getProperty("os.name")} ${System.getProperty("os.arch")}). " +
+            "On Apple silicon, run with an arm64 JDK (JAVA_HOME), not an Intel one under Rosetta.")
+    }
+}
+
 private class Rag : CliktCommand(name = "rag") {
     override fun help(context: Context) = "Digest PDF books into a low-memory local RAG index."
     override fun run() = Unit
@@ -45,7 +71,9 @@ private abstract class EmbeddingCommand(name: String) : CliktCommand(name = name
     val embedDim by option("--embed-dim", help = "Dimensions kept after Matryoshka truncation (multiple of 64)")
         .int().default(Indexer.DEFAULT_DIM)
 
-    fun embedder() = OllamaEmbedder(EmbeddingModel.forName(embedModel), ollamaUrl)
+    val onnxDir by onnxDirOption()
+
+    fun embedder() = embedderFor(embedModel, ollamaUrl, onnxDir)
 
     fun report(result: EmbedResult) =
         echo("Embeddings: ${result.embedded} embedded, ${result.copied} reused from identical text, status ${result.status}")
@@ -82,10 +110,11 @@ private class EmbedCommand : EmbeddingCommand("embed") {
     override fun help(context: Context) = "Embed (or finish embedding) an indexed book's paragraphs."
     val db by option("--db").required()
     val book by option("--book", help = "Book id (see `rag books`)").long().required()
+    val add by option("--add", help = "Keep the book's other models' vectors, so it can be searched with either (e.g. for phones, SPEC §15.9)").flag()
 
     override fun run() = SqliteStore(db).use { store ->
         val embedder = embedder().also { it.checkAvailable() }
-        report(Indexer(store).embed(book, embedder, embedDim))
+        report(Indexer(store).embed(book, embedder, embedDim, add = add))
     }
 }
 
@@ -100,6 +129,7 @@ private class SearchCommand : CliktCommand(name = "search") {
     val noSummaries by option("--no-summaries", help = "Search paragraphs only").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
+    val onnxDir by onnxDirOption()
     val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
     val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
     val frontMatterWeight by option("--front-matter-weight", help = "Score factor for front-matter paragraphs (1 = off)").double().default(Searcher.FRONT_MATTER_WEIGHT)
@@ -113,7 +143,7 @@ private class SearchCommand : CliktCommand(name = "search") {
             if (models.size > 1) throw UsageError("books use different models ($models): pass --book or --embed-model")
             models.firstOrNull()
         }
-        val embedder = if (mode == "lexical" || model == null) null else OllamaEmbedder(EmbeddingModel.forName(model), ollamaUrl)
+        val embedder = if (mode == "lexical" || model == null) null else embedderFor(model, ollamaUrl, onnxDir)
         val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
             .search(query, k, book, Mode.valueOf(mode.uppercase()))
         if (json) {
@@ -144,6 +174,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
     val details by option("--details", help = "Show the rank of every question").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Defaults to the model the books were embedded with")
+    val onnxDir by onnxDirOption()
     val lexicalWeight by option("--lexical-weight", help = "Keyword weight in hybrid fusion (vector = 1)").double().default(Searcher.LEXICAL_WEIGHT)
     val rrfK by option("--rrf-k", help = "Rank fusion constant; smaller makes rank matter more").int().default(Searcher.RRF_K)
     val frontMatterWeight by option("--front-matter-weight", help = "Score factor for front-matter paragraphs (1 = off)").double().default(Searcher.FRONT_MATTER_WEIGHT)
@@ -155,7 +186,7 @@ private class EvalCommand : CliktCommand(name = "eval") {
         val scope = if (book != null) listOfNotNull(store.book(book!!)) else store.books()
         if (scope.isEmpty()) throw UsageError("no books to evaluate")
         val model = embedModel ?: scope.mapNotNull { it.embedModel }.distinct().singleOrNull()
-        val embedder = model?.let { OllamaEmbedder(EmbeddingModel.forName(it), ollamaUrl) }
+        val embedder = model?.let { embedderFor(it, ollamaUrl, onnxDir) }
         val modes = if (mode == "all") listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID) else listOf(Mode.valueOf(mode.uppercase()))
         val results = Evaluation.run(Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits), questions, modes, k, book)
         val kinds = questions.groupingBy { it.kind }.eachCount().toSortedMap()
@@ -213,7 +244,7 @@ private class BooksCommand : CliktCommand(name = "books") {
         val books = store.books()
         if (books.isEmpty()) echo("No books indexed.")
         books.forEach { b ->
-            val vectors = b.embedModel?.let { "${it}@${b.embedDim}d ${b.embedStatus}" } ?: "no embeddings"
+            val vectors = b.models.joinToString(", ") { "${it.model}@${it.dim}d ${it.status}" }.ifEmpty { "no embeddings" }
             val summaries = b.summaryModel?.let { "summaries ${it} ${b.summaryStatus}" } ?: "no summaries"
             echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.format}, pages: ${b.pageKind}; chapters by ${b.chapterStrategy}; $vectors; $summaries]")
         }

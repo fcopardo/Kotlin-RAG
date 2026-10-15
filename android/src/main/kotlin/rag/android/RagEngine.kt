@@ -89,7 +89,7 @@ class RagEngine(
     }
 
     suspend fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID): List<Hit> = locked {
-        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }).also { searcher = it }
+        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true).also { searcher = it }
         s.search(query, k, bookId, mode)
     }
 

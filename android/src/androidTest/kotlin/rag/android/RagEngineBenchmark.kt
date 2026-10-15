@@ -10,9 +10,6 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import rag.embed.EmbeddingModel
-import rag.embed.OnnxEmbedder
-import rag.embed.WordPieceTokenizer
 import rag.search.Evaluation
 import rag.search.Mode
 import rag.search.Searcher
@@ -24,7 +21,8 @@ import java.io.File
  * SPEC §15.6 measurements on the device: model load, query embedding, indexing a real book with
  * on-device embeddings, peak memory, search latency and recall. Opt-in, like the desktop's
  * real-book tests: needs `-Pandroid.testInstrumentationRunnerArguments.ragBenchDir=<dir on device>`
- * holding `model_quantized.onnx`, `vocab.txt` and `book.pdf`. Results go to logcat (tag RagBench).
+ * holding `book.pdf` and each model's files as `<repository name>/onnx/model_quantized.onnx` and
+ * `<repository name>/vocab.txt`. `ragBenchTier=small|large` forces a tier. Results go to logcat (tag RagBench).
  */
 @RunWith(AndroidJUnit4::class)
 class RagEngineBenchmark {
@@ -34,9 +32,9 @@ class RagEngineBenchmark {
         val benchDir = InstrumentationRegistry.getArguments().getString("ragBenchDir")
         assumeTrue("ragBenchDir not set", benchDir != null)
         val dir = File(benchDir!!)
-        // Memory knobs (SPEC §15.6): ONNX batch size, and ONNX Runtime's CPU arena on or off.
-        val batch = InstrumentationRegistry.getArguments().getString("ragBenchBatch")?.toInt() ?: 8
-        val arena = InstrumentationRegistry.getArguments().getString("ragBenchArena")?.toBoolean() ?: true
+        // The tier's model (SPEC §15.9; default: this phone's), and ONNX Runtime's CPU arena on or off.
+        val tier = InstrumentationRegistry.getArguments().getString("ragBenchTier")?.let { DeviceTier.valueOf(it.uppercase()) }
+        val arena = InstrumentationRegistry.getArguments().getString("ragBenchArena")?.toBoolean()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val questionsFile = File(context.cacheDir, "compose-internals.jsonl")
@@ -45,7 +43,8 @@ class RagEngineBenchmark {
         val db = File(context.cacheDir, "bench.db").apply { delete() }
 
         report("device", "${android.os.Build.MODEL}, API ${android.os.Build.VERSION.SDK_INT}, ${Runtime.getRuntime().availableProcessors()} cores")
-        report("config", "onnx batch $batch, cpu arena $arena")
+        val build = RagModels.forDevice(context, tier)
+        report("config", "model ${build.storedName} (tier ${tier ?: RagModels.tier(RagModels.memory(context))}), cpu arena ${arena ?: "tier default"}")
         report("rss.baseline", memory())
 
         // 1. Read and split the book with no model loaded: the PDF parser's own peak.
@@ -57,17 +56,13 @@ class RagEngineBenchmark {
 
         // 2. Load the model and embed the stored paragraphs.
         t = SystemClock.elapsedRealtime()
-        val embedder = OnnxEmbedder(
-            File(dir, "model_quantized.onnx"),
-            WordPieceTokenizer.fromVocabFile(File(dir, "vocab.txt")),
-            EmbeddingModel.MXBAI_EMBED_LARGE,
-            model = EmbeddingModel.MXBAI_EMBED_LARGE.name,
-            batchSize = batch,
-            sessionOptions = OrtSession.SessionOptions().apply {
-                setCPUArenaAllocator(arena)
-                setMemoryPatternOptimization(arena)
-            },
-        )
+        val chosen = tier ?: RagModels.tier(RagModels.memory(context))
+        // The tier's own settings (RagModels.sessionOptions), unless ragBenchArena overrides them.
+        val options = if (arena == null) RagModels.sessionOptions(chosen) else OrtSession.SessionOptions().apply {
+            setCPUArenaAllocator(arena)
+            setMemoryPatternOptimization(arena)
+        }
+        val embedder = build.open(File(dir, build.directoryName), options)
         embedder.dim // loads the session and runs one probe
         report("model.load", "${SystemClock.elapsedRealtime() - t} ms")
         report("rss.modelLoaded", memory())
@@ -112,6 +107,59 @@ class RagEngineBenchmark {
         report("db.size", "${db.length() / 1024} KB")
         report("rss.end", memory())
         embedder.close()
+    }
+
+    /**
+     * Where reading a PDF spends memory (SPEC §15.9 step 4): PdfBox text extraction alone, the whole
+     * pipeline, then the database writes, each with a 20 ms sampler of RSS and Java heap.
+     */
+    @Test
+    fun parsePeaks() {
+        val benchDir = InstrumentationRegistry.getArguments().getString("ragBenchDir")
+        assumeTrue("ragBenchDir not set", benchDir != null)
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context)
+        val book = File(benchDir!!, "book.pdf")
+        report("parse.baseline", memory())
+
+        fun <T> sampled(name: String, block: () -> T): T {
+            System.gc()
+            resetPeak()
+            var maxHeap = 0L
+            var running = true
+            val sampler = Thread {
+                while (running) {
+                    val rt = Runtime.getRuntime()
+                    maxHeap = maxOf(maxHeap, rt.totalMemory() - rt.freeMemory())
+                    Thread.sleep(20)
+                }
+            }.apply { start() }
+            val t = SystemClock.elapsedRealtime()
+            val result = block()
+            running = false
+            sampler.join()
+            report("parse.$name", "${SystemClock.elapsedRealtime() - t} ms, peak Java heap ${maxHeap / 1_048_576} MB, native heap now ${Debug.getNativeHeapAllocatedSize() / 1_048_576} MB; ${memory()}")
+            return result
+        }
+
+        val extractor = rag.extract.PdfExtractor()
+        sampled("pdfboxPages") { extractor.open(book).use { extractor.readPages(it) }.size }
+        // The pipeline's stages one by one, as PdfBookSource.read runs them.
+        extractor.open(book).use { document ->
+            val raw = extractor.readPages(document)
+            val plan = sampled("stage.detect") { rag.structure.ChapterDetector().detect(document, raw, null) }
+            val assembled = sampled("stage.assemble") {
+                extractor.assemble(raw, plan.starts.map { rag.structure.OutlineChapters.ownTitle(it.title) to it.pdfPage }, plan.tocPages)
+            }
+            val chapters = sampled("stage.chapters") { rag.structure.Chapters.compute(assembled, plan.starts) }
+            sampled("stage.segment") { rag.structure.Segmenter().segment(assembled, chapters).size }
+        }
+        val structured = sampled("pipeline") { rag.BookReader(listOf(rag.PdfBookSource())).read(book) }
+        sampled("store") {
+            SqliteStore(File(context.cacheDir, "parse.db").apply { delete() }.path, BundledSqlDriver()).use {
+                it.insertBook(structured, "sha", structured.extractor)
+            }
+        }
     }
 
     /** Current and peak resident memory of this process (test app + library), from /proc. */

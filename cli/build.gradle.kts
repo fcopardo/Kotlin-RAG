@@ -10,6 +10,8 @@ dependencies {
     implementation(project(":store-jdbc"))
     implementation(project(":store-bundled")) // -Drag.sql.driver=bundled
     implementation(project(":embed-ollama"))
+    implementation(project(":embed-onnx")) // --onnx-dir: the same model files as phones (SPEC §15.9)
+    runtimeOnly("com.microsoft.onnxruntime:onnxruntime:1.30.0")
     implementation("com.github.ajalt.clikt:clikt:5.1.0")
 }
 

@@ -79,7 +79,15 @@ class Searcher(
     private val summaryWeight: Double = SUMMARY_WEIGHT,
     /** At most this many SUMMARY hits per query, so passages aren't crowded out. */
     private val maxSummaryHits: Int = MAX_SUMMARY_HITS,
+    /**
+     * A book embedded with another model than [embedder]'s: false throws [RagException.ModelMismatch]
+     * (the CLI); true searches that book by keywords only, with a warning (phones whose tier model
+     * differs from the one a copied index was built with, SPEC §15.9).
+     */
+    private val keywordsOnModelMismatch: Boolean = false,
 ) {
+    private val mismatchWarned = HashSet<Long>()
+
     private val texts = object : LinkedHashMap<Long, String>(4, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>) = size > textCacheBooks
     }
@@ -186,7 +194,7 @@ class Searcher(
     }
 
     private fun summaryIndex(bookId: Long): BinaryIndex = summaryIndexes.getOrPut(bookId) {
-        val rows = store.summaryBinaryVectors(bookId)
+        val rows = store.summaryBinaryVectors(bookId, embedder!!.model)
         BinaryIndex(LongArray(rows.size) { rows[it].first }, Array(rows.size) { rows[it].second })
     }
 
@@ -217,7 +225,7 @@ class Searcher(
 
     /** The query's full-length vector, or null if the backend is down and vectors aren't required. */
     private fun queryVector(query: String, books: List<BookRow>, required: Boolean): FloatArray? {
-        val embedded = books.filter { it.embedModel != null }
+        val embedded = books.filter { it.models.isNotEmpty() }
         if (embedded.isEmpty()) {
             if (required) throw RagException.EmbeddingBackendUnavailable("No embeddings in scope. Run `rag embed` first.")
             return null
@@ -226,11 +234,17 @@ class Searcher(
             if (required) throw RagException.EmbeddingBackendUnavailable("Vector search needs an embedding backend")
             return null
         }
-        embedded.firstOrNull { it.embedModel != embedder.model }?.let {
-            throw RagException.ModelMismatch(
-                "Book ${it.id} was embedded with '${it.embedModel}', not '${embedder.model}'. " +
-                    "Search with --embed-model ${it.embedModel}, or run `rag embed --book ${it.id}` to re-embed it."
+        val mismatched = embedded.filter { it.model(embedder.model) == null }
+        fun names(b: BookRow) = b.models.joinToString(", ") { "'${it.model}'" }
+        mismatched.firstOrNull()?.let {
+            val message = "Book ${it.id} was embedded with ${names(it)}, not '${embedder.model}'."
+            if (!keywordsOnModelMismatch || (required && mismatched.size == embedded.size)) throw RagException.ModelMismatch(
+                "$message Search with --embed-model ${it.embedModel}, or run `rag embed --book ${it.id}` (add --add to keep the current vectors)."
             )
+            mismatched.filter { b -> mismatchWarned.add(b.id) }.forEach { b ->
+                warn("Book ${b.id} was embedded with ${names(b)}, not '${embedder.model}'; searching it by keywords only")
+            }
+            if (mismatched.size == embedded.size) return null
         }
         return try {
             Vectors.l2Normalize(embedder.embedQuery(query))
@@ -243,7 +257,7 @@ class Searcher(
 
     /** Binary Hamming first pass, then int8 rescoring of the closest candidates. Unit ids, best first. */
     private fun vectorSearch(full: FloatArray, books: List<BookRow>, n: Int): List<Long> =
-        denseSearch(full, books, n, ::binaryIndex, store::vectors)
+        denseSearch(full, books, n, ::binaryIndex) { ids -> store.vectors(ids, embedder!!.model) }
 
     /** Binary first pass over [indexOf], then int8 rescoring of the closest candidates from [fetch]. */
     private fun denseSearch(
@@ -255,8 +269,10 @@ class Searcher(
     ): List<Long> {
         // Measured on the eval set: 200 candidates make 1-bit + int8 match float search; 100 lost a hit.
         val rescoreCount = maxOf(10 * n / 4, 200)
-        val scored = books.filter { it.embedModel != null && it.embedDim != null }.flatMap { book ->
-            val dim = book.embedDim!!
+        // Only books embedded with this model: others were rejected or left to keywords (queryVector).
+        val model = embedder?.model ?: return emptyList()
+        val scored = books.filter { it.model(model) != null }.flatMap { book ->
+            val dim = book.model(model)!!.dim
             if (dim > full.size) throw RagException.ModelMismatch("Book ${book.id} has $dim-dim vectors; the query has ${full.size}")
             val query = Quantizer.truncate(full, dim)
             val queryBits = Quantizer.bits(query)
@@ -274,7 +290,7 @@ class Searcher(
     }
 
     private fun binaryIndex(bookId: Long): BinaryIndex = binaryIndexes.getOrPut(bookId) {
-        val rows = store.binaryVectors(bookId)
+        val rows = store.binaryVectors(bookId, embedder!!.model)
         BinaryIndex(LongArray(rows.size) { rows[it].first }, Array(rows.size) { rows[it].second })
     }
 

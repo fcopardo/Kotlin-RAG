@@ -29,7 +29,7 @@ configure(subprojects.filter { it.name !in androidModules }) {
         useJUnitPlatform()
         jvmArgs("--enable-native-access=ALL-UNNAMED")
         // Env vars aren't task inputs by default: without this, toggling RAG_OLLAMA reuses a stale result.
-        listOf("RAG_OLLAMA", "RAG_OLLAMA_URL", "RAG_BOOK_PDF", "RAG_KOTLIN_PDF", "RAG_CTCI_PDF", "RAG_SUMMARY_MODEL", "RAG_ONNX_MODEL_DIR").forEach { name ->
+        listOf("RAG_OLLAMA", "RAG_OLLAMA_URL", "RAG_BOOK_PDF", "RAG_KOTLIN_PDF", "RAG_CTCI_PDF", "RAG_SUMMARY_MODEL", "RAG_ONNX_MODEL_DIR", "RAG_ONNX_NOMIC_DIR").forEach { name ->
             inputs.property(name, providers.environmentVariable(name).orElse(""))
         }
     }

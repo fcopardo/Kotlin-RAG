@@ -28,8 +28,9 @@ data class SegmentedChapter(val chapter: Chapter, val paragraphs: List<Paragraph
  */
 class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, private val maxTokens: Int = 400) {
 
-    private val blankLine = Regex("\\n[ \\t]*\\n")
-    private val word = Regex("\\S+")
+    // Blank lines and words are found with loops, not Regex: Kotlin's findAll makes a matcher per
+    // match, and on Android each one copies its input into native memory that waits for a GC.
+    // Over a book that peaked at +285 MB (SPEC §15.9 step 4).
 
     fun segment(book: ExtractedBook, chapters: List<Chapter>): List<SegmentedChapter> =
         chapters.map { SegmentedChapter(it, paragraphs(book, it.charStart, it.charEnd)) }
@@ -39,9 +40,20 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
         val text = book.text
         val blocks = mutableListOf<IntRange>()
         var start = from
-        blankLine.findAll(text.subSequence(0, to + 1), from).forEach { gap ->
-            blocks += start until gap.range.first
-            start = gap.range.last + 1
+        // Gaps are `\n[ \t]*\n`, found left to right without overlapping, like the regex they replace.
+        var i = from
+        while (i <= to) {
+            if (text[i] == '\n') {
+                var j = i + 1
+                while (j <= to && (text[j] == ' ' || text[j] == '\t')) j++
+                if (j <= to && text[j] == '\n') {
+                    blocks += start until i
+                    start = j + 1
+                    i = j + 1
+                    continue
+                }
+            }
+            i++
         }
         blocks += start..to
 
@@ -95,7 +107,6 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
         "dr.", "mr.", "mrs.", "ms.", "prof.", "st.", "sr.", "jr.", "vs.", "e.g.", "i.e.", "fig.",
         "figs.", "no.", "cf.", "approx.", "u.s.", "inc.", "ltd.", "vol.", "ch.", "sec.", "p.", "pp.",
     )
-    private val initial = Regex("^\\p{Lu}\\.$")
 
     /** The rules split after "Dr." or an initial like "J."; join those with the next sentence. */
     private fun mergeAbbreviations(text: String, spans: List<PhraseSpan>): List<PhraseSpan> {
@@ -113,13 +124,29 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
 
     private fun endsWithAbbreviation(phrase: String): Boolean {
         val lastWord = phrase.substringAfterLast(' ').trimStart('(', '"', '“', '\'')
-        return lastWord.lowercase() in abbreviations || initial.matches(lastWord)
+        // An initial: one uppercase letter (\p{Lu}) and a period.
+        val initial = lastWord.length == 2 && Character.getType(lastWord[0]) == Character.UPPERCASE_LETTER.toInt() && lastWord[1] == '.'
+        return lastWord.lowercase() in abbreviations || initial
     }
 
     // --- size cap ---
 
-    private fun tokens(text: String, span: PhraseSpan): Double =
-        word.findAll(text.subSequence(span.start, span.end + 1)).count() * 1.3
+    private fun tokens(text: String, span: PhraseSpan): Double = words(text, span.start, span.end).size * 1.3
+
+    /** Runs of non-whitespace in `text[from..to]`, as ranges; whitespace as in the JDK's `\s`. */
+    private fun words(text: String, from: Int, to: Int): List<IntRange> {
+        val words = mutableListOf<IntRange>()
+        var i = from
+        while (i <= to) {
+            while (i <= to && isSpace(text[i])) i++
+            val start = i
+            while (i <= to && !isSpace(text[i])) i++
+            if (i > start) words += start until i
+        }
+        return words
+    }
+
+    private fun isSpace(c: Char) = c == ' ' || c == '\t' || c == '\n' || c == '\u000B' || c == '\u000C' || c == '\r'
 
     /** Greedily groups consecutive phrases into paragraphs of at most [maxTokens]. */
     private fun pack(text: String, phrases: List<PhraseSpan>): List<List<PhraseSpan>> {
@@ -142,9 +169,9 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
     private fun splitLong(text: String, phrase: PhraseSpan): List<PhraseSpan> {
         if (tokens(text, phrase) <= maxTokens) return listOf(phrase)
         val maxWords = (maxTokens / 1.3).toInt().coerceAtLeast(1)
-        return word.findAll(text.subSequence(0, phrase.end + 1), phrase.start).toList()
+        return words(text, phrase.start, phrase.end)
             .chunked(maxWords)
-            .map { PhraseSpan(it.first().range.first, it.last().range.last) }
+            .map { PhraseSpan(it.first().first, it.last().last) }
     }
 
     /** The range without leading/trailing whitespace, or null if it's all whitespace. */

@@ -7,6 +7,7 @@ import java.util.zip.ZipOutputStream
 
 /** Builds small EPUB files for tests. Paths are relative to OEBPS/. */
 object TestEpubs {
+    private const val FIXED_TIME = 1_577_836_800_000L // 2020-01-01
 
     data class Doc(val path: String, val body: String, val linear: Boolean = true)
 
@@ -48,13 +49,15 @@ object TestEpubs {
         ZipOutputStream(file.outputStream()).use { zip ->
             // The mimetype entry comes first and is stored uncompressed.
             val mime = "application/epub+zip".toByteArray()
+            // Fixed entry times: the same content always gives the same bytes (and file SHA-256).
             zip.putNextEntry(ZipEntry("mimetype").apply {
+                time = FIXED_TIME
                 method = ZipEntry.STORED; size = mime.size.toLong(); compressedSize = size
                 crc = CRC32().apply { update(mime) }.value
             })
             zip.write(mime)
             fun put(path: String, content: String) {
-                zip.putNextEntry(ZipEntry(path))
+                zip.putNextEntry(ZipEntry(path).apply { time = FIXED_TIME })
                 zip.write(content.toByteArray())
             }
             put("META-INF/container.xml", """<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>""")

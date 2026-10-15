@@ -35,6 +35,8 @@ dependencies {
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
+    testImplementation(kotlin("test-junit"))
+
     androidTestImplementation(testFixtures(project(":core")))
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

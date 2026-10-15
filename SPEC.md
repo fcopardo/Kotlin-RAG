@@ -341,7 +341,7 @@ CREATE VIRTUAL TABLE summary_fts USING fts5(text, content='', contentless_delete
 -- Re-indexing a book deletes its FTS rows by rowid before deleting its units.
 ```
 
-**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 is **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6 (detected by its missing `char_start` column).
+**Schema version:** `PRAGMA user_version`. Phases 1–5 create version 1. Versions are numbered in the order they ship. Phase 8 (built before Phase 6) is **version 2**: `book.format` (`pdf` | `epub`), `book.page_kind` (`pdf` | `print` | `location`), and `page.label` (the page's display name, e.g. `xii` or `loc 37`), with `page.pdf_page` renamed `page_no`. Migrating fills `format = 'pdf'`, `page_kind = 'pdf'`, and `label` from the page number. Old databases are detected by their columns, because the earliest ones report version 0. Phase 6 is **version 3**: it adds the `book.summary_*` columns and recreates `summary`, which is always empty before Phase 6 (detected by its missing `char_start` column). Phase 7 (§15.9) is **version 4**: `embedding` is keyed by `(unit_id, model)` and the new `book_model` table lists every model a book has. The migration rebuilds `embedding`, keeping every vector, and fills `book_model` from `book.embed_*`; old files are detected by `embedding`'s one-column primary key.
 
 The structural data for a book (book, pages, units, FTS) is written in **one transaction**. Embeddings are written afterwards, one transaction per batch (§5.6). The DB uses WAL mode.
 
@@ -626,7 +626,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 
 ## 14. Open questions (defaults apply unless changed)
 - Locale: default `en`, set with `--locale`. Since Phase 7 step 5, sentence splitting uses fixed, language-neutral rules (§5.5), so the locale no longer changes it.
-- Phone embedding model (§15.6): `mxbai-embed-large` int8 meets the time and recall targets on the S25 but peaks at ≈ 600 MB, against a 400 MB target. Options: keep it on phones with ≥ 6 GB RAM, or evaluate `nomic-embed-text` / `embeddinggemma` int8 (needs downloading their ONNX files).
+- Phone embedding model: decided and built 2026-10-15 (§15.9). Phones with ≥ 6 GB of RAM use `mxbai-embed-large` int8; smaller ones use `nomic-embed-text` int8, stored as `nomic-embed-text@onnx-int8`.
 - Heading lines are kept as separate one-line paragraphs, not merged into the next paragraph. Default: keep. They are still embedded, and the chapter-title prefix duplicates them, which is harmless.
 - Embedding model: default `mxbai-embed-large` (decided 2026-10-14). Candidates still to evaluate: `embeddinggemma` (built for on-device use, relevant to §15), `bge-m3` and `snowflake-arctic-embed2` (multilingual).
 - Grow the evaluation set (more books, more questions) before tuning anything finer than one question in 20.
@@ -640,7 +640,7 @@ For comparison, float32 vectors at 768 dimensions are about 5.1 MB, and a copy o
 - Smaller embedding models for low-RAM machines: `all-minilm` (384 dims, ~45 MB), or static embeddings (model2vec), which need no transformer at query time. Deferred until the evaluation in §11 exists to compare them.
 - Matryoshka dimension: default 512 (decided). Revisit 256 if the §11 evaluation shows recall equal to 512's.
 
-## 15. Portability: desktop and Android (Phase 7, steps 1–5 done)
+## 15. Portability: desktop and Android (Phase 7, done)
 
 **Goal.** One code base serves the desktop CLI and an Android library, with the same database format, so an index can be built on either side and searched on either side.
 
@@ -737,12 +737,12 @@ Vectors are comparable only if they come from the same model weights and the sam
 
 | Measure | Result | Target |
 |---|---|---|
-| Read and split the book (PdfBox-Android, no model loaded) | 6.6 s, peak RSS 470 MB | |
+| Read and split the book (PdfBox-Android, no model loaded) | 6.6 s, peak RSS 470 MB (326 MB after the segmentation fix, §15.9 step 4) | |
 | Load the model | 0.9 s, +370 MB RSS | |
 | Embed one query | median 25 ms, p90 31 ms | < 300 ms ✅ |
 | Embed the book (ONNX batch 1) | 125 s, peak RSS 600 MB | |
 | Whole book, read + embed | ≈ 2.3 min | < 10 min ✅ |
-| Peak memory, model loaded | 580–600 MB | < 400 MB ❌ |
+| Peak memory, model loaded | 580–600 MB (585 MB after §15.9 step 4) | < 400 MB ❌: phones under 6 GB use the small tier instead (§15.9) |
 | Search, lexical / hybrid | median 7 ms / 60 ms; the first hybrid query takes ~730 ms while the binary vectors load | |
 | recall@5 on the device index: lexical / vector / hybrid | 0.55 / 0.80 / 0.80 | same as desktop (Ollama: hybrid 0.80) ✅ |
 | DB size | 2.5 MB | |
@@ -764,7 +764,8 @@ Vectors are comparable only if they come from the same model weights and the sam
 3. ✅ Split the Gradle modules as in §15.3. All 207 tests pass, on both SQL drivers, with every opt-in test enabled.
 4. ✅ Add `OnnxEmbedder` + WordPiece tokenizer on the JVM, plus the parity test against Ollama for the default model. Done **before** step 3, because parity decides index compatibility between desktop and phone, while the module split is mechanical.
 5. ✅ Add the Android library: PdfBox-Android adapter, `RagEngine`, instrumented tests. They ran on a connected phone (Galaxy S25, Android 16 / API 36, arm64) rather than an emulator: `./gradlew :android:connectedDebugAndroidTest`. `:integration-tests:androidGoldens` builds the inputs and expected outputs on the desktop (the fixture books, a JDBC-built `desktop.db`, unit lines and lexical results), and the test APK packages them as assets.
-6. ✅ (measured; model choice pending) Measure the reference-phone numbers from §15.6 and record them. On the S25, `mxbai-embed-large` int8 meets the time and recall targets but not the memory one. Whether to stay with it on phones or evaluate a smaller model is open (§14).
+6. ✅ (measured; the model choice became step 7) Measure the reference-phone numbers from §15.6 and record them. On the S25, `mxbai-embed-large` int8 meets the time and recall targets but not the memory one. Phones with less RAM get a smaller model: see step 7.
+7. ✅ Device tiers: mxbai with ≥ 6 GB RAM, nomic int8 below that (§15.9).
 
 ### 15.8 Acceptance criteria (Phase 7)
 - After steps 1–3: every Phase 1–5 test passes unchanged on desktop (tests may move to the new modules).
@@ -776,6 +777,76 @@ Vectors are comparable only if they come from the same model weights and the sam
 - **Indexing on Android:** ✅ the generated sample book (§11) and both *Art of War* EPUBs index on the device with the same book text, chapters, strategy, and every unit line (key, kind, offsets, pages, title) as on the desktop. The lexical results also match. Hybrid search on the device waits for step 6, which needs the ONNX model on the phone.
 - **Cancellation:** ✅ cancelling indexing between batches leaves `embed_status = 'partial'`, and a later `embed` resumes it, embedding only the rest.
 
+
+### 15.9 Device tiers: the model by RAM (step 7, decided 2026-10-15)
+Phones with 6 GB of RAM or more keep `mxbai-embed-large`. Smaller phones use a smaller model.
+
+| Tier | Detection | Model | Files |
+|---|---|---|---|
+| **Large** | `ActivityManager.MemoryInfo.totalMem` ≥ 5.0 GiB and not `isLowRamDevice()` | `mxbai-embed-large` int8 | 337 MB |
+| **Small** | everything else | `nomic-embed-text` v1.5 int8 | 137 MB |
+
+- **Threshold:** 5.0 GiB, because phones sold as 6 GB report about 5.3–5.6 GiB (the kernel keeps the rest). Apps can override the tier.
+- **Why nomic:**
+  - The same BERT WordPiece tokenizer as mxbai, already implemented.
+  - Mean pooling, already implemented.
+  - Ollama serves it, so the desktop can build matching indexes, and parity can be tested the same way as mxbai (§15.4).
+  - Desktop hybrid recall@5 on *Compose* is 0.75.
+- **Not `embeddinggemma` yet:** it needs a SentencePiece tokenizer and comes under Gemma's license terms.
+- **Constraints found in step 6:**
+  - **One model per book:** the `embedding` key is `unit_id`. Searching an mxbai book with a nomic embedder throws `ModelMismatch`.
+  - **Parsing alone breaks 400 MB:** reading a PDF peaked at 470 MB with no model, so a smaller model alone doesn't get a small phone under the target.
+
+**Steps** (all done 2026-10-15; each ends with passing tests):
+1. ✅ **Fall back to keyword search on a model mismatch.** `Searcher(keywordsOnModelMismatch = true)` searches a book embedded with other models by keywords only, with one warning per book. Vector-only search over nothing but mismatched books still fails. The CLI keeps exit code 5; `RagEngine` uses the fallback.
+2. ✅ **Several models per book (schema v4).**
+   - `embedding` is keyed by `(unit_id, model)`, and a new `book_model(book_id, model, dim, status)` table lists every model a book has.
+   - `book.embed_*` mirror the *primary* model (the first one added), so code that knows one model per book keeps working.
+   - `rag embed --add` adds a model and keeps the others. Without it, embedding with another model replaces them, as before.
+   - Summaries stay embedded with the primary model only.
+   - v3 files migrate in place: the table is rebuilt and the vectors are kept (`MigrationTest`).
+   - Measured on *Art of War* (1,415 paragraphs): each extra model adds ≈ 1 MB (≈ 0.7 KB per paragraph).
+3. ✅ **nomic ONNX parity** (`NomicOnnxParityTest`, *Art of War*):
+
+   | nomic build | Avg cosine vs Ollama (docs / queries) | recall@5 hybrid |
+   |---|---|---|
+   | Ollama | — | 0.85 |
+   | ONNX fp32 (547 MB) | 1.0000 / 1.0000 | 0.85 (Ollama index) |
+   | ONNX int8 `model_quantized.onnx` (137 MB) | 0.9737 / 0.9724 ❌ | 0.80 (its own index) |
+   | ONNX q4 `model_q4.onnx` (165 MB) | 0.8556 / 0.8604 ❌ | 0.65 (Ollama index) |
+
+   - **int8 fails the 0.99 bar, so its vectors are their own model, `nomic-embed-text@onnx-int8`.** The desktop builds small-tier vectors with that same file: `rag embed --embed-model nomic-embed-text --onnx-dir models/nomic-embed-text-v1.5 --add`. Phone and desktop then run the same weights through the same runtime.
+   - `OnnxModels` (in `embed-onnx`) records each build's stored name. The parity test checks that the name agrees with the measurement: the Ollama name only when parity holds.
+   - **Truncation:** 512 of 768 dimensions without nomic's layer norm is no worse than the full 768 (hybrid recall 0.85 vs 0.80).
+   - `--onnx-dir` needs a JVM that ONNX Runtime has natives for: macOS arm64, Linux x64/arm64, Windows x64. On Apple silicon that means an arm64 JDK, not an Intel one under Rosetta; the CLI says so.
+4. ✅ **PDF parsing memory.** Measured stage by stage on the phone (`RagEngineBenchmark#parsePeaks`), PdfBox wasn't the cause, so the temp-file idea was dropped. PdfBox's text extraction peaked at only +50 MB. Segmentation spiked to +285 MB of *native* memory: Kotlin's `Regex.findAll` makes a new matcher for every match, and Android's ICU-backed matcher copies its input (here, up to the whole book) into native memory that's freed only at a GC. `Segmenter` now finds blank lines and words with plain loops, using the exact semantics of the JDK's `\s`. The units come out identical, checked against the goldens.
+   - The parse peak went from 479 MB to 229 MB.
+   - Segmentation went from 1.0 s to 0.2 s.
+5. ✅ **Tier selection.** `RagModels.tier(DeviceMemory)` is unit-tested with fake 4 GB, 6 GB and 12 GB phones and a low-RAM flag. `RagModels.forDevice(context, override)` returns the `OnnxModel`: its stored name, files and repository. `RagModels.open(tier, dir)` applies the tier's ONNX settings. The library doesn't download models.
+6. ✅ **Measured on the S25** (`ragBenchTier=small|large`; *Compose internals*, 205 pages, 1,598 texts embedded):
+
+   | | Large: mxbai int8 | Small: nomic int8, arena off |
+   |---|---|---|
+   | Read and split the book, peak RSS | 5.7 s, 326 MB | 5.7 s, 326 MB |
+   | Load model | 0.8 s, +390 MB | 0.5 s, +180 MB |
+   | Embed a query | median 25 ms | median 11 ms |
+   | Embed the book | 101 s | 59 s |
+   | Peak RSS while embedding | 585 MB | **384 MB** ✅ |
+   | Search, hybrid median | 48 ms | 25 ms |
+   | recall@5 lexical / vector / hybrid | 0.55 / 0.80 / 0.80 | 0.55 / 0.70 / **0.75** ✅ |
+
+   - **Arena on, small tier:** 45 s, but the peak was 425 MB. `RagModels.sessionOptions(SMALL)` therefore turns it off.
+   - **What's in the peaks:** the test process starts at 122 MB, which is included in every figure.
+   - **Desktop vs phone:** the same int8 file on the desktop gives vector 0.75 / hybrid 0.75. The phone's vector result is one question lower, which the "within one question" rule allows. The CPUs' int8 kernels differ.
+   - **Not done:** the optional 4 GB emulator run.
+7. ✅ §14, §15.6 and the README are updated.
+
+**Acceptance:**
+- **Large tier:** ✅ unchanged; recall 0.80, and its peak is now 585 MB (was 600) thanks to step 4.
+- **Small tier:** ✅ peak RSS 384 MB < 400; the book in 65 s < 10 min; hybrid recall@5 0.75 ≥ 0.75.
+- **Both tiers:** ✅ a DB carrying two models gives the same vector results on the desktop and the phone for each model. The goldens use two deterministic models, `RagEngineDeviceTest`. For real models, the same ONNX file is used on both sides.
+- **Contingency** (`snowflake-arctic-embed` 33M): not needed.
+- **Model files:** from `nomic-ai/nomic-embed-text-v1.5` (Apache-2.0), in the git-ignored `models/nomic-embed-text-v1.5/`. `onnx/model_quantized.onnx` is the one used on phones; `onnx/model.onnx` and `onnx/model_q4.onnx` were used only for the parity measurements.
 
 ## 16. EPUB input (Phase 8, done)
 

@@ -6,6 +6,9 @@ import rag.SampleBook
 import rag.embed.Embedder
 import rag.embed.FakeEmbedder
 import rag.extract.Normalizer
+import rag.search.Mode
+import rag.search.Searcher
+import rag.store.BookModel
 import rag.store.SqliteStore
 import java.io.File
 import kotlin.test.AfterTest
@@ -131,10 +134,10 @@ class IndexerTest {
         assertEquals("complete", book.embedStatus)
         assertEquals(128, book.embedDim)
         val paragraphs = store.units(result.bookId, UnitKind.PARAGRAPH)
-        val vectors = store.vectors(paragraphs.map { it.id })
+        val vectors = store.vectors(paragraphs.map { it.id }, "fake-bow")
         assertEquals(paragraphs.size, vectors.size)
         vectors.forEach { assertEquals(128, it.int8.size); assertEquals(2, it.bits.size) }
-        assertEquals(paragraphs.size, store.binaryVectors(result.bookId).size)
+        assertEquals(paragraphs.size, store.binaryVectors(result.bookId, "fake-bow").size)
     }
 
     @Test
@@ -148,7 +151,7 @@ class IndexerTest {
         val inputs = embedder.documentCalls.flatten()
         assertEquals(1, inputs.count { "This exact paragraph repeats" in it })
         assertTrue(result.embedded!!.copied >= 7, "copies: ${result.embedded}")
-        assertEquals(0, store.paragraphsMissingEmbedding(result.bookId).size)
+        assertEquals(0, store.paragraphsMissingEmbedding(result.bookId, "fake-bow").size)
     }
 
     @Test
@@ -158,7 +161,7 @@ class IndexerTest {
         assertFailsWith<RagException.EmbeddingBackendUnavailable> { indexer.index(pdf, embedder = failing) }
         val bookId = store.books().single().id
         assertEquals("partial", store.book(bookId)!!.embedStatus)
-        val missing = store.paragraphsMissingEmbedding(bookId).size
+        val missing = store.paragraphsMissingEmbedding(bookId, "fake-bow").size
         assertTrue(missing > 0)
 
         val resume = FakeEmbedder()
@@ -188,7 +191,33 @@ class IndexerTest {
 
         assertEquals(count, store.count("embedding"))
         assertEquals("b" to 64, store.book(bookId)!!.let { it.embedModel to it.embedDim })
-        assertTrue(store.vectors(store.units(bookId, UnitKind.PARAGRAPH).map { it.id }).all { it.int8.size == 64 })
+        assertTrue(store.vectors(store.units(bookId, UnitKind.PARAGRAPH).map { it.id }, "b").all { it.int8.size == 64 })
+        assertEquals(listOf("b"), store.book(bookId)!!.models.map { it.model })
+    }
+
+    @Test
+    fun `adding a model keeps the others, and each model is searched with its own vectors`() {
+        val bookId = indexer().index(pdf, embedder = FakeEmbedder(model = "a")).bookId
+        val paragraphs = store.units(bookId, UnitKind.PARAGRAPH).map { it.id }
+
+        val added = indexer().embed(bookId, FakeEmbedder(model = "b", dim = 512), embedDim = 256, add = true)
+
+        assertEquals(paragraphs.size, added.embedded + added.copied)
+        val book = store.book(bookId)!!
+        assertEquals(listOf(BookModel("a", 512, "complete"), BookModel("b", 256, "complete")), book.models)
+        assertEquals("a" to 512, book.embedModel to book.embedDim, "the first model stays primary")
+        assertEquals(2 * paragraphs.size, store.count("embedding"))
+        assertTrue(store.vectors(paragraphs, "b").all { it.int8.size == 256 })
+        assertTrue(store.vectors(paragraphs, "a").all { it.int8.size == 512 })
+        // Both models search the same book.
+        listOf(FakeEmbedder(model = "a"), FakeEmbedder(model = "b", dim = 512)).forEach { e ->
+            assertTrue(Searcher(store, e).search("bravo", mode = Mode.VECTOR).isNotEmpty(), e.model)
+        }
+
+        // Dropping the primary promotes the next model.
+        store.clearEmbeddings(bookId, "a")
+        assertEquals("b" to 256, store.book(bookId)!!.let { it.embedModel to it.embedDim })
+        assertEquals(paragraphs.size, store.count("embedding"))
     }
 
     private fun tables(): List<String> =

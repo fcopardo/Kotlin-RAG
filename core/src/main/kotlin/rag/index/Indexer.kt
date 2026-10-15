@@ -43,13 +43,14 @@ class Indexer(
         embedder?.checkAvailable()
         val structured = reader.read(file, options = ReadOptions(tocPages = tocPages, locationSize = locationSize))
         val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing)
-        val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch) }
+        val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch = onBatch) }
         return IndexResult(bookId, skipped = false, embedded = embedded)
     }
 
     /**
-     * Embeds the book's paragraphs that have no vector yet. Switching model or dimension drops the
-     * existing vectors first. Identical paragraphs are embedded once.
+     * Embeds the book's paragraphs that have no vector from this model yet. Identical paragraphs are
+     * embedded once. Changing this model's dimension drops its vectors first. Other models' vectors
+     * are dropped too, unless [add] keeps them so the book can be searched with either (SPEC §15.9).
      *
      * [onBatch] runs after each committed batch with the texts embedded so far and in total. It may
      * throw to stop (e.g. a cancelled coroutine): the book stays `partial` and a later call resumes.
@@ -58,16 +59,16 @@ class Indexer(
         bookId: Long,
         embedder: Embedder,
         embedDim: Int = DEFAULT_DIM,
+        add: Boolean = false,
         onBatch: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): EmbedResult {
         val book = store.book(bookId) ?: throw IllegalArgumentException("no book with id $bookId")
         require(embedDim <= embedder.dim) { "--embed-dim $embedDim is larger than the model's ${embedder.dim} dimensions" }
         Quantizer.truncate(FloatArray(embedDim), embedDim) // validates the dimension early
 
-        if (book.embedModel != null && (book.embedModel != embedder.model || book.embedDim != embedDim)) {
-            store.transaction { store.clearEmbeddings(bookId) }
-        }
-        val missing = store.paragraphsMissingEmbedding(bookId)
+        book.models.filter { (it.model == embedder.model && it.dim != embedDim) || (!add && it.model != embedder.model) }
+            .forEach { store.clearEmbeddings(bookId, it.model) }
+        val missing = store.paragraphsMissingEmbedding(bookId, embedder.model)
         store.setEmbedState(bookId, embedder.model, embedDim, if (missing.isEmpty()) "complete" else "partial")
         if (missing.isEmpty()) return EmbedResult(0, 0, "complete")
 

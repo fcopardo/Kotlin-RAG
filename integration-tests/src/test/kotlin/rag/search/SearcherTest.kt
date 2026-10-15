@@ -115,6 +115,27 @@ class SearcherTest {
     }
 
     @Test
+    fun `with keywordsOnModelMismatch, another model's book is searched by keywords, once warned`() {
+        val other = FakeEmbedder(model = "other")
+        val pdf = File(dir, "tea.pdf")
+        TestPdfs.build(listOf(listOf("Tea", "", "The tea was cold when it arrived.")), listOf("Tea" to 1)).use { it.save(pdf) }
+        val teaId = Indexer(store).index(pdf, embedder = other).bookId
+        val warnings = mutableListOf<String>()
+        val searcher = Searcher(store, embedder, warn = { warnings += it }, keywordsOnModelMismatch = true)
+
+        val hits = searcher.search("cold when it arrived", k = 10)
+        searcher.search("soup", k = 5)
+
+        val tea = hits.filter { it.bookId == teaId }
+        assertTrue(tea.isNotEmpty() && tea.all { it.matchType == MatchType.LEXICAL || it.matchType == MatchType.EXACT_PHRASE }, "$tea")
+        assertTrue(hits.any { it.bookId == bookId && it.matchType != MatchType.LEXICAL }, "the matching book still gets vector hits")
+        assertEquals(1, warnings.count { "Book $teaId" in it }, "$warnings")
+        // Only mismatched books in scope and vectors required: still an error.
+        assertFailsWith<RagException.ModelMismatch> { searcher.search("tea", bookId = teaId, mode = Mode.VECTOR) }
+        assertTrue(searcher.search("tea", bookId = teaId).isNotEmpty())
+    }
+
+    @Test
     fun `hybrid falls back to keywords when the backend is down, vector mode fails`() {
         val down = object : Embedder by embedder {
             override fun embedQuery(text: String) = throw RagException.EmbeddingBackendUnavailable("Ollama is down")
