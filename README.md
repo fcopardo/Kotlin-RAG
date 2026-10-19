@@ -400,6 +400,9 @@ rag index --db books.db --file mybook.pdf       # repeat per book; `rag subjects
      parameters;
   3. when the model asks for a tool, send `tools/call` and return the text result as a tool message;
   4. repeat until the model answers.
+- **On another computer:** `./gradlew :cli:distZip` builds a package (`bin/rag` and `bin\rag.bat`)
+  that needs only Java 21+. Copy it with the database, provide the same embedding model, and
+  register it with absolute paths; see [docs/AGENTS.md](docs/AGENTS.md#on-another-machine).
 - **Agents that don't speak MCP:** call the HTTP API. `POST /search` with
   `{"query": "…", "k": 5, "compact": true}` returns the same passages as the MCP tool.
 

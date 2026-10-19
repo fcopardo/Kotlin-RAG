@@ -133,6 +133,62 @@ result = rpc("tools/call", {"name": "search_books", "arguments": {"query": "what
 passages = result["structuredContent"]["passages"]
 ```
 
+### On another machine
+
+To run the server on a different computer, install `rag`, copy the database, provide the
+embedding model, then register the server with absolute paths.
+
+1. **Install `rag`.** Build a self-contained package here:
+
+   ```bash
+   ./gradlew :cli:distZip
+   ```
+
+   This produces `cli/build/distributions/rag-0.1.0.zip` (~80 MB): every library, plus launchers for
+   macOS/Linux (`bin/rag`) and Windows (`bin\rag.bat`). Unzip it anywhere on the other machine, e.g.
+   `/opt/rag-0.1.0`. That machine needs Java 21 or newer, through `JAVA_HOME` or on the `PATH`. On
+   Apple silicon, use an arm64 JDK if you'll use ONNX models (`--onnx-dir`).
+
+   You can also clone the repository there and run `./gradlew :cli:installDist` (the launcher is
+   then `cli/build/install/rag/bin/rag`, but `./gradlew clean` deletes it).
+
+2. **Copy the database.** It's one file, e.g. `~/books/library.db`. Copy it while no `rag` process
+   is writing, so no `-wal` file is left beside it. Or index books on that machine with
+   `rag index --db ~/books/library.db --file book.pdf`.
+
+3. **Provide the embedding model** the books were embedded with (`rag books` lists each book's
+   models).
+   - **For Ollama models** (the default, `mxbai-embed-large`): install Ollama, run
+     `ollama pull mxbai-embed-large`, and keep Ollama running while the server is used.
+     Without it, search falls back to keywords with a warning.
+   - **For ONNX builds** (`nomic-embed-text@onnx-int8`): add them on the first machine with
+     `rag embed … --add --onnx-dir …` (README), and copy the model folder
+     (`models/nomic-embed-text-v1.5/`). Then start the server with
+     `--embed-model nomic-embed-text@onnx-int8 --onnx-dir <that folder>`. No Ollama is needed.
+
+4. **Register it.**
+   - **Claude Code**, for every project on that machine:
+
+     ```bash
+     claude mcp add books --scope user -- /opt/rag-0.1.0/bin/rag mcp --db /Users/you/books/library.db
+     ```
+
+     Use `--scope local` to limit it to one project. Add `-e JAVA_HOME=/path/to/jdk-21` if Java
+     isn't on the `PATH` that Claude Code sees.
+   - **Claude Desktop:** the JSON above, with the new paths. Desktop apps don't read your shell
+     profile, so add `"env": {"JAVA_HOME": "/path/to/jdk-21"}` if `java` isn't found. On Windows the
+     command is `C:\\Tools\\rag-0.1.0\\bin\\rag.bat` (backslashes doubled in JSON), and the config
+     is in `%APPDATA%\Claude\`.
+   - **Other MCP clients:** a stdio server with the command `…/bin/rag` and the arguments
+     `mcp --db <path>`.
+
+5. **Check it.** `claude mcp list` should show `books: … ✔ Connected`. Without any client, send it
+   a handshake; it should answer with a line containing `"serverInfo":{"name":"rag"`:
+
+   ```bash
+   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | /opt/rag-0.1.0/bin/rag mcp --db ~/books/library.db
+   ```
+
 ## HTTP
 
 ```bash
