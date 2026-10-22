@@ -28,6 +28,9 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import rag.BookFormat
+import rag.BookFormats
+import rag.RagException
 import rag.android.HitLocator
 import rag.search.Hit
 import java.io.File
@@ -49,7 +52,17 @@ class BookViewerActivity : ComponentActivity() {
         paragraph = intent.getStringExtra(EXTRA_PARAGRAPH).orEmpty()
         sentence = intent.getStringExtra(EXTRA_SENTENCE).orEmpty()
         title = intent.getStringExtra(EXTRA_TITLE)
-        if (file.extension.equals("pdf", ignoreCase = true)) showPdf(intent.getIntExtra(EXTRA_PAGE, 1)) else showEpub()
+        // By content, not by name: documents picked through a content provider may have no extension.
+        val format = try {
+            BookFormats.sniff(file)
+        } catch (e: RagException) {
+            setContentView(TextView(this).apply { setPadding(48, 48, 48, 48); text = "Can't open ${file.name}: ${e.message}" }.also(::padForSystemBars))
+            return
+        }
+        when (format) {
+            BookFormat.PDF -> showPdf(intent.getIntExtra(EXTRA_PAGE, 1))
+            BookFormat.EPUB -> showEpub()
+        }
     }
 
     // --- PDF: the page rendered by Android, the paragraph's lines highlighted ---

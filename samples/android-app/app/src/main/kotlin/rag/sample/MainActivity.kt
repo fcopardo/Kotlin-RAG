@@ -2,6 +2,7 @@ package rag.sample
 
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -17,7 +18,11 @@ import androidx.lifecycle.lifecycleScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import rag.BookFormat
+import rag.BookFormats
 import rag.RagException
 import rag.search.Hit
 import java.io.File
@@ -63,20 +68,72 @@ class MainActivity : ComponentActivity() {
         return "Tier ${tier.name.lowercase()}, $model"
     }
 
+    /** Indexes every PDF or EPUB in the books folder, recognized by content: names may lack an extension. */
     private fun indexFolder() {
-        val books = RagLibrary.booksDir(this).listFiles { f -> f.extension.lowercase() in setOf("pdf", "epub") }.orEmpty()
-        if (books.isEmpty()) status.text = "No PDF or EPUB in ${RagLibrary.booksDir(this)}"
-        books.forEach { IndexWorker.enqueue(this, it) }
+        lifecycleScope.launch {
+            val books = withContext(Dispatchers.IO) {
+                RagLibrary.booksDir(this@MainActivity).listFiles().orEmpty().filter { f -> f.isFile && formatOf(f) != null }
+            }
+            if (books.isEmpty()) status.text = "No PDF or EPUB in ${RagLibrary.booksDir(this@MainActivity)}"
+            books.forEach { IndexWorker.enqueue(this@MainActivity, it) }
+        }
     }
 
-    /** Copies a picked document into the books folder (the library reads files), then indexes it. */
+    /**
+     * Copies a picked document into the books folder (the library reads files), then indexes it.
+     * A content provider's URI doesn't carry the file name (e.g. `.../document/msf:42`), so the name
+     * comes from the provider's display name, and the extension from the content itself.
+     */
     private fun importAndIndex(uri: Uri) {
         lifecycleScope.launch {
-            val name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "book"
-            val target = File(RagLibrary.booksDir(this@MainActivity), name)
-            contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { input.copyTo(it) } }
-            IndexWorker.enqueue(this@MainActivity, target)
+            val name = displayName(uri)
+            val imported = withContext(Dispatchers.IO) {
+                val books = RagLibrary.booksDir(this@MainActivity)
+                val temp = File.createTempFile("import", null, cacheDir)
+                try {
+                    contentResolver.openInputStream(uri)?.use { input -> temp.outputStream().use { input.copyTo(it) } }
+                    val format = formatOf(temp) ?: return@withContext null
+                    val target = uniqueFile(books, withExtension(name, format))
+                    temp.copyTo(target)
+                    target
+                } finally {
+                    temp.delete()
+                }
+            }
+            if (imported == null) {
+                status.text = "$name isn't a PDF or an EPUB."
+                return@launch
+            }
+            Log.i(TAG, "indexing ${imported.name}")
+            IndexWorker.enqueue(this@MainActivity, imported)
         }
+    }
+
+    /** The document's name as the provider shows it ("Compose internals.pdf"), or a fallback. */
+    private fun displayName(uri: Uri): String =
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }?.replace(Regex("[/\\\\:*?\"<>|]"), "_")?.takeIf { it.isNotBlank() } ?: "book"
+
+    private fun formatOf(file: File): BookFormat? = try {
+        BookFormats.sniff(file)
+    } catch (e: RagException) {
+        null
+    }
+
+    /** [name] ending in the format's extension: "Compose internals" → "Compose internals.pdf". */
+    private fun withExtension(name: String, format: BookFormat): String {
+        val extension = format.name.lowercase()
+        return if (name.endsWith(".$extension", ignoreCase = true)) name else "$name.$extension"
+    }
+
+    /** [name] in [dir], or "name (2).pdf", "name (3).pdf"… if another book already has it. */
+    private fun uniqueFile(dir: File, name: String): File {
+        val base = name.substringBeforeLast('.')
+        val extension = name.substringAfterLast('.')
+        return generateSequence(1) { it + 1 }
+            .map { n -> File(dir, if (n == 1) name else "$base ($n).$extension") }
+            .first { !it.exists() }
     }
 
     private fun observeIndexing() {
@@ -140,7 +197,7 @@ class MainActivity : ComponentActivity() {
             results.text = "${hit.bookTitle} isn't in ${RagLibrary.booksDir(this)} on this device, so it can't be opened."
             return
         }
-        Log.i(TAG, "opening ${file.name} at ${citation(hit)}")
+        Log.i(TAG, "opening ${file.name}, ${file.path}, ${file.extension} at ${citation(hit)}")
         BookViewerActivity.open(this, file, hit, citation(hit))
     }
 
@@ -150,7 +207,7 @@ class MainActivity : ComponentActivity() {
         resultList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         query = EditText(this).apply { hint = "Ask something about your books" }
         subject = EditText(this).apply { hint = "Subject filter (optional), e.g. android" }
-        val pick = Button(this).apply { text = "Add a book (PDF or EPUB)"; setOnClickListener { pickBook.launch(arrayOf("application/pdf", "application/epub+zip")) } }
+        val pick = Button(this).apply { text = "Add a book (PDF or EPUB)"; setOnClickListener { pickBook.launch(BOOK_TYPES) } }
         val folder = Button(this).apply { text = "Index the books folder"; setOnClickListener { indexFolder() } }
         val go = Button(this).apply { text = "Search"; setOnClickListener { search() } }
         val column = LinearLayout(this).apply {
@@ -163,5 +220,11 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "RagSample"
+
+        /**
+         * What the system file picker may offer. A file without an extension is typed
+         * application/octet-stream, so it's allowed too; [formatOf] then checks the content.
+         */
+        val BOOK_TYPES = arrayOf("application/pdf", "application/epub+zip", "application/octet-stream")
     }
 }

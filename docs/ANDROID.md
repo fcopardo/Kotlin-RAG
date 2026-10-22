@@ -168,6 +168,13 @@ class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
 - **Input is a `File`.** Copy books picked with the system file picker (`ACTION_OPEN_DOCUMENT`) into
   app storage first, as the sample does.
+- **Don't rely on file names.** A content provider's URI doesn't carry the file name, and its display
+  name may have no extension. The library recognizes PDFs and EPUBs by content, and so should the
+  app wherever it branches on the format. The sample:
+  - names the copy from `OpenableColumns.DISPLAY_NAME`;
+  - adds the extension `BookFormats.sniff(file)` reports;
+  - also allows `application/octet-stream` in the picker, since a file without an extension has that
+    type and would otherwise be greyed out.
 - **Stopping:** cancelling the work stops it between embedding batches. The book stays searchable by
   keywords, and its embedding status stays `partial` until a later `embed()` finishes it.
 - **Re-adding a book:** a file with the same content is detected by its SHA-256 and not indexed again
