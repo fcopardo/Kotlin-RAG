@@ -1,7 +1,7 @@
 package rag.structure
 
 /** How chapters were found: PDF outline or TOC pages; EPUB 3 nav, EPUB 2 NCX or headings; or one chapter. */
-enum class ChapterStrategy { OUTLINE, TOC, NAV, NCX, HEADINGS, MARKDOWN, IDEAS, FALLBACK }
+enum class ChapterStrategy { OUTLINE, TOC, NAV, NCX, HEADINGS, MARKDOWN, IDEAS, CLAUSES, FALLBACK }
 
 /**
  * Where chapters start, before the book text is assembled.

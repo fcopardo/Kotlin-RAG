@@ -14,7 +14,7 @@ import java.io.File
  * the sections, fenced blocks and indented blocks are code, and inline marks are left in place.
  * A file with no headings is divided by topic instead ([TextTiling]).
  */
-class TextBookSource(private val papers: PaperBuilder = PaperBuilder()) : BookSource {
+class TextBookSource(private val documents: DocumentBuilder = DocumentBuilder()) : BookSource {
     override val format = BookFormat.TEXT
     override val extractor = "text/norm-v1"
 
@@ -23,7 +23,7 @@ class TextBookSource(private val papers: PaperBuilder = PaperBuilder()) : BookSo
         if (raw.isBlank()) throw RagException.BookUnreadable("Empty document: $file")
         val parsed = MarkdownText.parse(raw)
         if (parsed.text.isBlank()) throw RagException.BookUnreadable("Document has no text: $file")
-        return papers.build(
+        return documents.build(
             parsed.text, parsed.title ?: file.nameWithoutExtension, format, extractor,
             parsed.headings, parsed.codeRanges, options,
         )

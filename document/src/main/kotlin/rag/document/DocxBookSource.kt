@@ -20,7 +20,7 @@ import java.util.zip.ZipFile
  * Each `<w:p>` is a paragraph; a paragraph whose style is `Heading N` (or `Title`) is a heading;
  * each `<w:tbl>` row becomes one line of a table paragraph, as in EPUB.
  */
-class DocxBookSource(private val papers: PaperBuilder = PaperBuilder()) : BookSource {
+class DocxBookSource(private val documents: DocumentBuilder = DocumentBuilder()) : BookSource {
     override val format = BookFormat.DOCX
     override val extractor = "docx/norm-v1"
 
@@ -66,7 +66,7 @@ class DocxBookSource(private val papers: PaperBuilder = PaperBuilder()) : BookSo
         if (out.isBlank()) throw RagException.BookUnreadable("Word document has no text: $file")
 
         val name = title ?: headings.firstOrNull { it.level == 0 }?.title ?: file.nameWithoutExtension
-        return papers.build(out.toString(), name, format, extractor, headings, emptyList(), options)
+        return documents.build(out.toString(), name, format, extractor, headings, emptyList(), options)
     }
 
     /**

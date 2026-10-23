@@ -16,7 +16,7 @@ import java.io.File
  * tables come out identically; `<h1>`–`<h6>` give the sections.
  */
 class HtmlBookSource(
-    private val papers: PaperBuilder = PaperBuilder(),
+    private val documents: DocumentBuilder = DocumentBuilder(),
     private val textBuilder: EpubTextBuilder = EpubTextBuilder(),
 ) : BookSource {
     override val format = BookFormat.HTML
@@ -43,6 +43,6 @@ class HtmlBookSource(
         val title = document.title().trim().takeIf { it.isNotEmpty() }
             ?: found.firstOrNull { it.level == 1 }?.title
             ?: file.nameWithoutExtension
-        return papers.build(built.text, title, format, extractor, found, built.codeRanges, options)
+        return documents.build(built.text, title, format, extractor, found, built.codeRanges, options)
     }
 }

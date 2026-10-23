@@ -18,14 +18,17 @@ import java.util.Locale
 data class Heading(val title: String, val level: Int, val offset: Int)
 
 /**
- * Turns a document's text into a **paper** (SPEC §18.2): paper > section > paragraph > sentence.
+ * Turns a document's text into a **paper** or a **contract** (SPEC §18.2), picking whichever its
+ * structure says it is:
  *
- * Sections come from the document's own headings when it has at least two, with nested headings
- * joined into a path title (`Introduction › Background`), the way PDF parts are. A document with no
- * headings is divided by topic instead ([TextTiling]), and each section is titled by the opening
- * words of its first paragraph.
+ * - a **contract** when it has nesting clause numbers *and* reads like an agreement
+ *   ([ClauseDetector]): contract > clause > paragraph > sentence, titled `4. Term › 4.2 Renewal`;
+ * - else a **paper** divided by its own headings, nested headings joined into a path title
+ *   (`Introduction › Background`), the way PDF parts are;
+ * - else a paper divided by topic ([TextTiling]), each section titled by the opening words of its
+ *   first paragraph.
  */
-class PaperBuilder(private val segmenter: Segmenter = Segmenter()) {
+class DocumentBuilder(private val segmenter: Segmenter = Segmenter()) {
 
     fun build(
         text: String,
@@ -40,9 +43,13 @@ class PaperBuilder(private val segmenter: Segmenter = Segmenter()) {
         val count = maxOf(1, (text.length + size - 1) / size)
         val book = ExtractedBook(text, IntArray(count) { it * size }, codeRanges, List(count) { "loc ${it + 1}" })
 
-        val (strategy, starts) = when {
-            headings.size >= 2 -> ChapterStrategy.MARKDOWN to pathTitles(headings, size)
-            else -> ChapterStrategy.IDEAS to ideas(book, size)
+        // Clauses win over headings: a contract's heading styles are its clause numbers anyway,
+        // and the check needs legal wording too, so a numbered paper stays a paper.
+        val clauses = ClauseDetector.detect(text)
+        val (kind, strategy, starts) = when {
+            clauses != null -> Triple(DocumentKinds.CONTRACT, ChapterStrategy.CLAUSES, pathTitles(clauses, size))
+            headings.size >= 2 -> Triple(DocumentKinds.PAPER, ChapterStrategy.MARKDOWN, pathTitles(headings, size))
+            else -> Triple(DocumentKinds.PAPER, ChapterStrategy.IDEAS, ideas(book, size))
         }
         val plan = ChapterPlan(
             if (starts.size >= 2) strategy else ChapterStrategy.FALLBACK,
@@ -53,7 +60,7 @@ class PaperBuilder(private val segmenter: Segmenter = Segmenter()) {
         return StructuredBook(
             book, chapters, plan, Segmenter(locale).segment(book, chapters),
             title = title, format = format, pageKind = PageKind.LOCATION, extractor = extractor,
-            kind = DocumentKinds.PAPER.name,
+            kind = kind.name,
         )
     }
 
