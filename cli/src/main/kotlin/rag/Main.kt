@@ -83,8 +83,8 @@ private abstract class EmbeddingCommand(name: String) : CliktCommand(name = name
 }
 
 private class IndexCommand : EmbeddingCommand("index") {
-    override fun help(context: Context) = "Parse a PDF or EPUB, store its units, and embed its paragraphs."
-    val file by option("--file", "--pdf", help = "PDF or EPUB file (format detected from content)").file(mustExist = true, canBeDir = false).required()
+    override fun help(context: Context) = "Parse a book, document or page (PDF, EPUB, Word, HTML, Markdown, text), store its units, and embed its passages."
+    val file by option("--file", "--pdf", help = "The file to index; its format is detected from the content").file(mustExist = true, canBeDir = false).required()
     val db by option("--db", help = "SQLite database file").required()
     val tocPages by option("--toc-pages", help = "PDF only: pages with the table of contents, e.g. 5-8")
         .convert { BookReader.parsePageRanges(it) }
@@ -103,8 +103,10 @@ private class IndexCommand : EmbeddingCommand("index") {
         }
         val book = store.book(result.bookId)!!
         val units = store.units(result.bookId).groupingBy { it.kind }.eachCount()
-        echo("Indexed book ${result.bookId}: ${book.title ?: file.name} (${book.format}, pages: ${book.pageKind})")
-        echo("Chapters by ${book.chapterStrategy}: ${units[UnitKind.CHAPTER] ?: 0}, paragraphs: ${units[UnitKind.PARAGRAPH] ?: 0}, phrases: ${units[UnitKind.PHRASE] ?: 0}")
+        val levels = DocumentKinds.of(book.kind).levels
+        echo("Indexed ${levels.root} ${result.bookId}: ${book.title ?: file.name} (${book.kind}, ${book.format}, pages: ${book.pageKind})")
+        echo("${units[UnitKind.CHAPTER] ?: 0} ${levels.section}s by ${book.chapterStrategy}, " +
+            "${units[UnitKind.PARAGRAPH] ?: 0} ${levels.passage}s, ${units[UnitKind.PHRASE] ?: 0} ${levels.fragment}s")
         result.embedded?.let(::report)
     }
 }

@@ -26,6 +26,7 @@ include(
     ":core",
     ":pdf-pdfbox",
     ":epub",
+    ":document",
     ":store-jdbc",
     ":store-bundled",
     ":embed-ollama",

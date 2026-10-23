@@ -8,6 +8,7 @@ dependencies {
     implementation(project(":core"))
     implementation(project(":pdf-pdfbox"))
     implementation(project(":epub"))
+    implementation(project(":document"))
     implementation(project(":store-jdbc"))
     implementation(project(":store-bundled")) // -Drag.sql.driver=bundled
     implementation(project(":embed-ollama"))

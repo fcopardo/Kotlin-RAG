@@ -1,0 +1,3 @@
+rag.document.TextBookSource
+rag.document.HtmlBookSource
+rag.document.DocxBookSource

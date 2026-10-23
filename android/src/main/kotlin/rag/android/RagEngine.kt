@@ -11,6 +11,9 @@ import rag.BookReader
 import rag.PdfBookSource
 import rag.ReadOptions
 import rag.embed.Embedder
+import rag.document.DocxBookSource
+import rag.document.HtmlBookSource
+import rag.document.TextBookSource
 import rag.epub.EpubBookSource
 import rag.index.EmbedResult
 import rag.index.IndexResult
@@ -53,7 +56,9 @@ class RagEngine(
 
     private val store = SqliteStore(dbFile.path, BundledSqlDriver())
     // Explicit sources and driver: no reliance on ServiceLoader surviving the app's R8 setup.
-    private val indexer = Indexer(store, BookReader(listOf(PdfBookSource(), EpubBookSource())))
+    private val indexer = Indexer(store, BookReader(listOf(
+        PdfBookSource(), EpubBookSource(), TextBookSource(), HtmlBookSource(), DocxBookSource(),
+    )))
     private val lock = Mutex()
     private var searcher: Searcher? = null
 

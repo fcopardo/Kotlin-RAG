@@ -39,6 +39,7 @@ kotlin {
 dependencies {
     api(project(":core"))
     api(project(":epub"))
+    api(project(":document"))
     api(project(":store-bundled"))
     api(project(":embed-onnx"))
     api(project(":pdf-pdfbox-android"))

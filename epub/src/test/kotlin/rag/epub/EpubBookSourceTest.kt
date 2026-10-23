@@ -200,10 +200,13 @@ class EpubBookSourceTest {
     fun `format is sniffed from content, and toc pages are refused for EPUB`() {
         val e = epub { TestEpubs.build(it, docs, toc) }
         val renamed = File(dir, "actually-an-epub.pdf").also { e.copyTo(it) }
+        // Named .epub but plain text: a text document now, not an EPUB (SPEC §18.4).
         val text = File(dir, "notes.epub").apply { writeText("just text") }
+        val binary = File(dir, "blob.epub").apply { writeBytes(byteArrayOf(0, 1, 2, 3, 0, 7)) }
 
         assertEquals(BookFormat.EPUB, BookFormats.sniff(renamed))
-        assertFailsWith<RagException.BookUnreadable> { BookFormats.sniff(text) }
+        assertEquals(BookFormat.TEXT, BookFormats.sniff(text))
+        assertFailsWith<RagException.BookUnreadable> { BookFormats.sniff(binary) }
         assertFailsWith<IllegalArgumentException> { BookReader().read(e, tocPages = setOf(1)) }
         assertEquals(4, BookReader().read(renamed).chapters.size)
     }

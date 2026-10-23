@@ -4,6 +4,7 @@ dependencies {
     testImplementation(project(":core"))
     testImplementation(project(":pdf-pdfbox"))
     testImplementation(project(":epub"))
+    testImplementation(project(":document"))
     testImplementation(project(":store-jdbc"))
     testImplementation(project(":store-bundled"))
     testImplementation(project(":embed-ollama"))
