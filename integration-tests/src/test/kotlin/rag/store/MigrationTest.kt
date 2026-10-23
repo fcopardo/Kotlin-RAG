@@ -69,4 +69,27 @@ class MigrationTest {
         // Opening again is a no-op.
         SqliteStore(path).use { assertEquals(1, it.book(before.second)!!.models.size) }
     }
+
+    @Test
+    fun `a version 5 database gains the document kind and answers the same`(@TempDir dir: File) {
+        val path = File(dir, "v5.db").path
+        val pdf = SampleBook.write(File(dir, "sample.pdf"))
+        val before = SqliteStore(path).use { store ->
+            val bookId = Indexer(store).index(pdf, embedder = FakeEmbedder()).bookId
+            Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey } to bookId
+        }
+        // Back to the version 5 shape: no kind column. SQLite can drop a plain column in place.
+        SqlDriver.default().open(path).use { s ->
+            s.execute("ALTER TABLE book DROP COLUMN kind")
+            s.execute("PRAGMA user_version = 5")
+        }
+
+        SqliteStore(path).use { store ->
+            assertEquals("book", store.book(before.second)!!.kind, "an existing book is a book")
+            assertEquals(before.first, Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey })
+            assertEquals(SqliteStore.SCHEMA_VERSION, store.db.query("PRAGMA user_version") { it.int(1) }.single())
+        }
+        // Opening again is a no-op.
+        SqliteStore(path).use { assertEquals("book", it.book(before.second)!!.kind) }
+    }
 }

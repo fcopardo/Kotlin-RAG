@@ -26,7 +26,7 @@ class SyntheticBooks(epubs: List<File>) {
     }.map { it.replace('\n', ' ') }.filter { it.length in 40..400 }.distinct()
 
     /** Book [seed] with [paragraphs] paragraphs over [chapters] chapters, about five paragraphs a page. */
-    fun build(seed: Int, paragraphs: Int, chapters: Int = 10): StructuredBook {
+    fun build(seed: Int, paragraphs: Int, chapters: Int = 10, kind: String = rag.DocumentKinds.BOOK.name): StructuredBook {
         val random = Random(seed)
         val text = StringBuilder()
         val pageStarts = mutableListOf<Int>()
@@ -47,6 +47,7 @@ class SyntheticBooks(epubs: List<File>) {
         return StructuredBook(
             book, chapterList, ChapterPlan(ChapterStrategy.HEADINGS, starts), Segmenter().segment(book, chapterList),
             title = "Synthetic book $seed", format = BookFormat.EPUB, pageKind = PageKind.PDF, extractor = "synthetic",
+            kind = kind,
         )
     }
 }

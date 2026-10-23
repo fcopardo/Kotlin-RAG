@@ -143,9 +143,18 @@ class Searcher(
      * @param subject only books about this (SPEC §8.5): a subject named by these words, or close in
      *   meaning to one of the book's subjects when there's an embedder ("android" finds "Jetpack Compose").
      */
-    fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID, subject: String? = null): List<Hit> {
+    fun search(
+        query: String,
+        k: Int = 5,
+        bookId: Long? = null,
+        mode: Mode = Mode.HYBRID,
+        subject: String? = null,
+        /** Only documents of this kind: "book", "paper", "contract", "code" (SPEC §18.3). */
+        kind: String? = null,
+    ): List<Hit> {
         require(k > 0) { "k must be positive" }
-        val all = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
+        val inScope = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
+        val all = if (kind == null) inScope else inScope.filter { it.kind == kind }
         val books = if (subject == null) all else booksAbout(subject, all.map { it.id }.toSet()).let { ids -> all.filter { it.id in ids } }
         if (books.isEmpty()) return emptyList()
         val n = maxOf(4 * k, 20)
@@ -158,7 +167,7 @@ class Searcher(
 
         val lexical = if (mode == Mode.VECTOR || context.terms == null) emptyList()
         // One query over every book in scope, so hits are ranked by relevance, not by book.
-        else store.ftsSearch("para_fts", context.terms, bookId = bookId, limit = n, bookIds = if (subject != null) books.map { it.id } else null)
+        else store.ftsSearch("para_fts", context.terms, bookId = bookId, limit = n, bookIds = if (books.size < inScope.size) books.map { it.id } else null)
         val dense = vector?.let { v -> vectorSearch(v, books, n) }.orEmpty()
 
         val summaries = if (includeSummaries) summaryRanking(context, books, mode, n) else emptyList()

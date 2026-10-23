@@ -18,6 +18,8 @@ class StructuredBook(
     val extractor: String = "unknown",
     /** Subjects the file declares (EPUB `dc:subject`, PDF Keywords), as written (SPEC §8.5). */
     val subjects: List<String> = emptyList(),
+    /** The kind of document, which decides what its levels are called (SPEC §18.2). */
+    val kind: String = DocumentKinds.BOOK.name,
 ) {
     fun text(chapter: Chapter): String = book.text.substring(chapter.charStart, chapter.charEnd + 1)
 

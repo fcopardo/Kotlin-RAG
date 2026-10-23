@@ -1,6 +1,7 @@
 package rag.server
 
 import kotlinx.serialization.Serializable
+import rag.DocumentKinds
 import rag.citation
 import rag.embed.Embedder
 import rag.index.UnitKind
@@ -16,10 +17,19 @@ data class BookInfo(
     val id: Long,
     val title: String?,
     val format: String,
+    /** "book", "paper", "contract" or "code" (SPEC §18.2). */
+    val kind: String,
+    /** What this kind calls its levels, so a client can say "clauses" instead of "chapters". */
+    val levels: LevelInfo,
+    /** Number of sections: chapters for a book, clauses for a contract, files for a project. */
     val chapters: Int,
     val models: List<String>,
     val subjects: List<SubjectInfo>,
 )
+
+/** The level names of a document kind, root first (SPEC §18.2). */
+@Serializable
+data class LevelInfo(val root: String, val section: String, val passage: String, val fragment: String)
 
 @Serializable
 data class SubjectInfo(val subject: String, val weight: String)
@@ -74,7 +84,7 @@ class RagService(
     private var dataVersion = -1L
 
     @Synchronized
-    fun search(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID): List<Hit> {
+    fun search(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null): List<Hit> {
         require(query.isNotBlank()) { "query is empty" }
         require(k in 1..50) { "k must be between 1 and 50" }
         if (bookId != null) requireBook(bookId)
@@ -83,12 +93,12 @@ class RagService(
         // The most common primary model in scope; books without it are searched by keywords.
         val model = if (mode == Mode.LEXICAL) null
         else embedModel ?: books.mapNotNull { it.embedModel }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
-        return searcher(model).search(query, k, bookId, mode, subject)
+        return searcher(model).search(query, k, bookId, mode, subject, kind)
     }
 
     @Synchronized
-    fun passages(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID): List<Passage> =
-        search(query, k, bookId, subject, mode).map { h ->
+    fun passages(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null): List<Passage> =
+        search(query, k, bookId, subject, mode, kind).map { h ->
             Passage(
                 book = h.bookTitle, bookId = h.bookId, chapter = h.chapter.title,
                 pages = citation(h.pageKind, h.paragraph.pageStartLabel, h.paragraph.pageEndLabel),
@@ -101,8 +111,11 @@ class RagService(
     fun books(): List<BookInfo> {
         val subjects = store.allSubjects()
         return store.books().map { b ->
+            val levels = DocumentKinds.of(b.kind).levels
             BookInfo(
-                b.id, b.title, b.format, store.units(b.id, UnitKind.CHAPTER).size, b.models.map { it.model },
+                b.id, b.title, b.format, b.kind,
+                LevelInfo(levels.root, levels.section, levels.passage, levels.fragment),
+                store.units(b.id, UnitKind.CHAPTER).size, b.models.map { it.model },
                 subjects[b.id].orEmpty().map { SubjectInfo(it.subject, weightName(it.weight)) },
             )
         }

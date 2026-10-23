@@ -21,6 +21,7 @@ import com.github.ajalt.clikt.parameters.types.long
 import rag.embed.EmbeddingModel
 import rag.embed.Embedder
 import rag.embed.OllamaEmbedder
+import rag.DocumentKinds
 import rag.embed.OnnxModels
 import rag.summarize.SubjectIndexer
 import rag.summarize.Subjects
@@ -128,6 +129,7 @@ private class SearchCommand : CliktCommand(name = "search") {
     val book by option("--book", help = "Only this book id").long()
     val mode by option("--mode", help = "hybrid | lexical | vector").choice("hybrid", "lexical", "vector").default("hybrid")
     val subject by option("--subject", help = "Only books about this subject (see `rag books`, `rag subjects`)")
+    val kind by option("--kind", help = "Only documents of this kind: ${DocumentKinds.ALL.joinToString(", ") { it.name }}")
     val json by option("--json", help = "Print results as JSON").flag()
     val noSummaries by option("--no-summaries", help = "Search paragraphs only").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
@@ -148,7 +150,7 @@ private class SearchCommand : CliktCommand(name = "search") {
         }
         val embedder = if (mode == "lexical" || model == null) null else embedderFor(model, ollamaUrl, onnxDir)
         val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
-            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject)
+            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject, kind)
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use
@@ -277,7 +279,10 @@ private class BooksCommand : CliktCommand(name = "books") {
             val vectors = b.models.joinToString(", ") { "${it.model}@${it.dim}d ${it.status}" }.ifEmpty { "no embeddings" }
             val summaries = b.summaryModel?.let { "summaries ${it} ${b.summaryStatus}" } ?: "no summaries"
             val subjects = store.subjects(b.id).joinToString(", ") { "${it.subject} (${weightName(it.weight)})" }.ifEmpty { "no subjects" }
-            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.format}, pages: ${b.pageKind}; chapters by ${b.chapterStrategy}; $vectors; $summaries]")
+            val levels = DocumentKinds.of(b.kind).levels
+            val sections = store.units(b.id, UnitKind.CHAPTER).size
+            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.kind}, ${b.format}, pages: ${b.pageKind}; " +
+                "$sections ${levels.section}s by ${b.chapterStrategy}; $vectors; $summaries]")
             echo("    subjects: $subjects")
         }
     }

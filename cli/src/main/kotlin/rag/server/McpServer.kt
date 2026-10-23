@@ -89,6 +89,7 @@ class McpServer(
                         bookId = args.long("book_id"),
                         subject = args.string("subject")?.takeIf { it.isNotBlank() },
                         mode = args.string("mode")?.let { Mode.valueOf(it.uppercase()) } ?: Mode.HYBRID,
+                        kind = args.string("kind"),
                     )))
                 }
                 "list_books" -> buildJsonObject { put("books", json.encodeToJsonElement(service.books())) }
@@ -174,6 +175,7 @@ class McpServer(
                     "k" to prop("integer", "Number of passages, 1 to 20. Default 5.") { JsonObject(this + ("minimum" to JsonPrimitive(1)) + ("maximum" to JsonPrimitive(20))) },
                     "subject" to prop("string", "Only books about this subject, e.g. \"android\" or \"military strategy\" (matched by name or meaning)."),
                     "book_id" to prop("integer", "Only this book (ids from list_books)."),
+                    "kind" to prop("string", "Only documents of this kind: book, paper, contract or code (see list_books)."),
                     "mode" to prop("string", "hybrid (default), lexical (keywords only) or vector (meaning only).") {
                         JsonObject(this + ("enum" to buildJsonArray { add("hybrid"); add("lexical"); add("vector") }))
                     },
@@ -181,7 +183,8 @@ class McpServer(
             ))
             add(tool(
                 "list_books", "List books",
-                "List the indexed books: id, title, format, number of chapters and subjects (main, tangential, broad).",
+                "List the indexed documents: id, title, format, kind (book, paper, contract, code), what that kind " +
+                    "calls its levels, the number of sections and the subjects (main, tangential, broad).",
                 schema(emptyList()),
             ))
             add(tool(

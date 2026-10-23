@@ -23,6 +23,8 @@ data class SearchRequest(
     val book: Long? = null,
     val subject: String? = null,
     val mode: String = "hybrid",
+    /** Only documents of this kind: book, paper, contract, code. */
+    val kind: String? = null,
     /** Passages (few tokens, for language models) instead of full hits. */
     val compact: Boolean = false,
 )
@@ -70,6 +72,7 @@ class HttpApi(private val service: RagService, host: String, port: Int) : AutoCl
                         subject = query["subject"]?.takeIf { it.isNotBlank() },
                         mode = query["mode"] ?: "hybrid",
                         compact = query["compact"] == "true",
+                        kind = query["kind"]?.takeIf { it.isNotBlank() },
                     ),
                 )
                 chapterPath.matches(path) -> {
@@ -98,8 +101,8 @@ class HttpApi(private val service: RagService, host: String, port: Int) : AutoCl
     }
 
     private fun search(r: SearchRequest) = Mode.valueOf(r.mode.uppercase()).let { mode ->
-        if (r.compact) json.encodeToJsonElement(service.passages(r.query, r.k, r.book, r.subject, mode))
-        else json.encodeToJsonElement(service.search(r.query, r.k, r.book, r.subject, mode))
+        if (r.compact) json.encodeToJsonElement(service.passages(r.query, r.k, r.book, r.subject, mode, r.kind))
+        else json.encodeToJsonElement(service.search(r.query, r.k, r.book, r.subject, mode, r.kind))
     }
 
     private fun problem(message: String?) = JsonObject(mapOf("error" to JsonPrimitive(message ?: "error")))

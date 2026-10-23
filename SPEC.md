@@ -1064,3 +1064,127 @@ Two long-running front ends over one shared `RagService` (`cli/src/main/kotlin/r
 - **Measured** from Python (stdlib clients) on the 4-book library (~17k paragraphs) with mxbai through Ollama: the first search takes 0.6–1.2 s, later ones 49–97 ms, against ~1.4 s per `rag search` subprocess before embedding.
 - **Not in scope:** writing through the servers (indexing stays a CLI step), authentication (localhost only), and MCP resources and prompts.
 
+
+## 18. Documents, contracts and code (Phase 9, in progress)
+
+**Goal.** Index more than books — plain documents, contracts and source code — each with its own
+structure, without disturbing the book pipeline.
+
+The structures asked for:
+
+- **paper** (no index section): phrase < paragraph < idea < paper
+- **contract**: phrase < paragraph < clause < section < contract
+- **code**: line < block < function < class < file < package < module < … < project
+
+### 18.1 Why not a deeper hierarchy
+Generalizing the stored hierarchy to arbitrary depth would break stored, user-visible contracts:
+the unit key `<hash>-<n><type>-<m><scope>` (§6.1) has one scope slot holding "chapter number or
+book id"; `kind` is a `CHECK` constraint; `Hit`/`ChapterRef` is the documented LLM-tool JSON; MCP
+`read_chapter` addresses one flat level by integer. Two places would also fail **silently** at the
+wrong level: `Searcher.hit()` takes one `parent_id` hop, and `paragraphsMissingEmbedding` joins the
+parent for the title that goes into every embedding.
+
+So the hierarchy stays four levels and **each kind maps onto it**, with deeper levels carried in the
+`c` unit's path-title — the mechanism PDF parts already use (`OutlineChapters.PART_SEPARATOR`,
+e.g. `Introduction › Foreword`).
+
+### 18.2 The four slots per kind
+`b` root · `c` nearest named ancestor (deeper levels in its path-title) · `g` retrieval unit
+(embedded, `para_fts`) · `p` citation unit (`phrase_fts`).
+
+| Kind | `b` | `c` title | `g` | `p` | Pages |
+|---|---|---|---|---|---|
+| **book** (unchanged) | book | `Part › Chapter` | paragraph | phrase | PDF / PRINT / LOCATION |
+| **paper** | paper | `Heading › Idea 3` | paragraph | sentence | LOCATION |
+| **contract** | contract | `§4 Termination › 4.2 Notice` | paragraph | sentence | LOCATION |
+| **code** | project | `module/pkg › File.kt › Class` | function | line | FILE (label = relative path) |
+
+- **Code's `p` = line needs no new code:** `Segmenter` already splits by line instead of by sentence
+  when `is_code` is set, and `Normalizer.normalizeCode` keeps indentation.
+- **Code's "block" is not a stored level.** A function over the token cap is split into several `g`
+  units, exactly as `Segmenter.pack`/`splitLong` already split long paragraphs. A block becomes a
+  unit only when its function is too big to retrieve whole.
+- Deeper ancestry stays searchable: the indexer embeds `parentTitle + "\n" + body` (§5.6), so
+  `module/pkg › File.kt › Class` is part of the embedded text.
+
+### 18.3 Engines, and where the data lives
+Independence lives in the **reader**, not the storage. Each kind is its own module with its own
+detector, fixtures and eval set, so they are developed, tested and run in parallel.
+
+Storage stays the single schema plus one additive column, `book.kind` (**schema version 6**,
+default `'book'`). Clients read it to label levels — `rag books`, `list_books` and the sample app
+say "clauses" or "functions" instead of "chapters" — and `--kind` scopes a search, symmetric with
+`--subject` (§8.5).
+
+**Separate vs merged databases is a runtime choice**, since `--db` picks the file:
+
+| Goal | How | Cost |
+|---|---|---|
+| Index kinds in parallel | separate files | a search covers one file |
+| One search over everything | one file | writes serialize: SQLite has one writer per file |
+
+Identical code either way; switching needs no migration.
+
+**Rejected: separate tables per kind in one file.** It keeps the write serialization while losing
+the benefits. It needs every table name in `SqliteStore` parameterized; BM25 scores from separate
+FTS tables are not on one scale, so cross-kind keyword ranking becomes arbitrary (the §8.4 bug
+class, across kinds); and unit ids restart per table, so fused results still need a `(kind, id)`
+pair.
+
+**A director agent** (one MCP server per kind, an agent merging the answers) needs no library
+change. It suits kinds on different machines or with different access rules, but as a default it is
+weaker than one index: the model merges instead of rank fusion, costing tokens and latency, with no
+common ranking.
+
+### 18.4 Detection per kind
+- **paper** — `ChapterStrategy.MARKDOWN` when the file has headings (`#`, Setext, `<h1>`–`<h6>`),
+  else `IDEAS`. **Ideas are detected lexically** (TextTiling: vocabulary overlap between adjacent
+  paragraph windows, cut at the dips).
+  *Why not embeddings:* structure is built before and independently of embedding, which is optional
+  and resumable (`--no-embed`), and the phone tier uses a different model from the desktop (§15.9).
+  Embedding-based structure would give one file different hierarchies on different devices and
+  break the desktop/device golden parity tests. An embedding variant can be measured against this
+  later and adopted only if it wins.
+- **contract** — `ChapterStrategy.CLAUSES`: numbering (`1.`, `1.1`, `(a)`, `ARTICLE IV`, `WHEREAS`,
+  `§`); the shallower level is the section, the deeper the clause, combined into the path title.
+- **code** — `ChapterStrategy.CODE`: a scanner per language family that strips strings and comments,
+  then finds declarations. C-family (Kotlin, Java, JS/TS, C, C++, C#, Go, Rust, Swift) by brace
+  balancing; Python by indentation; anything else gets file + line levels only. A project is read
+  from a **directory**: files in sorted path order concatenated into one text, with `.gitignore`-style
+  skips (build output, `node_modules`, binaries, minified files).
+
+### 18.5 Steps (each ends with passing tests)
+1. Plumbing: `DocumentKind`, `LevelNames`, `book.kind` (v6), level names in `rag books` /
+   `list_books` / `BookInfo`, `--kind` filter. Books behave identically.
+2. `document` module, **paper**: plain text, Markdown, HTML (reusing the EPUB jsoup walker), `.docx`
+   (a zip of XML: `java.util.zip` + jsoup's XML parser, no new dependency).
+3. **contract** in the same module: clause and section numbering.
+4. `code` module: the scanners, directory reading, `PageKind.FILE`, and `rag structure` — a tuning
+   harness that prints the detected levels for a file, a folder and a whole project, with counts,
+   titles and sizes, so the heuristics can be judged and adjusted.
+5. Folder indexing for documents: `rag index --dir notes/`, one document per file, skipping ones
+   already indexed by SHA-256; a folder button in the sample app.
+6. Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector.
+7. Optional: searching several database files at once, for people who split by kind but want one
+   query. Needs a `(db, bookId)` pair in `Hit`. Not needed to search across kinds — one file does.
+
+### 18.6 Acceptance criteria
+- **No regression on books** (the gate for every step): `./gradlew check` with every opt-in variable
+  on both SQL drivers; the Android goldens byte-identical; eval unchanged (*Compose* hybrid 0.80,
+  *Art of War* 0.75, nomic 0.75/0.80); `:android:connectedDebugAndroidTest` green.
+- **Per kind:** its own 20-question eval set (keyword + paraphrase) run by `rag eval` against that
+  kind's database, and a structure test over a committed fixture.
+- **Code:** `rag structure` reviewed by hand on one file, one package and this repo; a test per
+  language family asserting known classes and functions are found; a search for a function name
+  returns that function as a `g` unit.
+- **Migration:** a version 5 database opens, gains `kind = 'book'`, and answers its eval set
+  identically.
+
+### 18.7 Known limits
+- Deeper levels are path-titles, not addressable units: `module/pkg › File.kt › Class` can be
+  searched and cited, but "all classes in package X" is not a unit query. A true N-level hierarchy
+  stays possible later; it breaks keys and the `Hit` contract, and is out of scope.
+- Code structure is heuristic, not a compiler front end: macros, generated code, unusual formatting
+  and template-heavy C++ will mis-split. `rag structure` exists to make that visible.
+- A mixed-kind result list shows different level names per hit. Clients that hard-code the word
+  "chapter" need a small change.

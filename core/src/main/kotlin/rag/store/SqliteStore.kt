@@ -1,5 +1,6 @@
 package rag.store
 
+import rag.DocumentKinds
 import rag.StructuredBook
 import rag.embed.QuantizedVector
 import rag.embed.Quantizer
@@ -21,6 +22,8 @@ data class BookRow(
     val createdAt: String,
     /** "pdf" or "epub". */
     val format: String = "pdf",
+    /** The document kind (SPEC §18.2): "book", "paper", "contract", "code". */
+    val kind: String = DocumentKinds.BOOK.name,
     /** "pdf", "print" or "location" (SPEC §16.5). */
     val pageKind: String = "pdf",
     val summaryModel: String? = null,
@@ -102,7 +105,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
         migrate()
         // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;
-        // book subjects and vectors are 5 (new tables only, created above).
+        // book subjects and vectors are 5 (new tables only, created above); the document kind is 6 (§18.3).
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -124,6 +127,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         val bookColumns = columns("book")
         if ("format" !in bookColumns) update("ALTER TABLE book ADD COLUMN format TEXT NOT NULL DEFAULT 'pdf'")
         if ("page_kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'pdf'")
+        // Version 5 → 6 (SPEC §18.3): the document kind, which decides what a book's levels are called.
+        if ("kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'")
         // Version 2 → 3 (summaries, SPEC §5.7): progress columns, and the full summary table.
         if ("summary_model" !in bookColumns) {
             update("ALTER TABLE book ADD COLUMN summary_model TEXT")
@@ -199,10 +204,10 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     fun insertBook(structured: StructuredBook, fileSha256: String, extractor: String, replacing: Long? = null): Long = transaction {
         replacing?.let(::deleteBookRows)
         val bookId = insert(
-            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, format, page_kind, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, format, page_kind, kind, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             fileSha256, structured.title, structured.book.text, extractor,
             structured.plan.strategy.name.lowercase(), structured.plan.pageOffset,
-            structured.format.name.lowercase(), structured.pageKind.name.lowercase(), Instant.now().toString(),
+            structured.format.name.lowercase(), structured.pageKind.name.lowercase(), structured.kind, Instant.now().toString(),
         )
         batch("INSERT INTO page(book_id, page_no, char_start, label) VALUES (?,?,?,?)",
             structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
@@ -557,7 +562,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     private fun bookRow(r: SqlRow) = BookRow(
         r.long("id"), r.string("file_sha256")!!, r.string("title"), r.string("chapter_strategy")!!,
         r.intOrNull("page_offset"), r.string("embed_model"), r.intOrNull("embed_dim"), r.string("embed_status")!!, r.string("created_at")!!,
-        r.string("format")!!, r.string("page_kind")!!,
+        r.string("format")!!, r.string("kind")!!, r.string("page_kind")!!,
         r.string("summary_model"), r.string("summary_prompt"), r.string("summary_status")!!,
     )
 
@@ -568,14 +573,14 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 5
+        const val SCHEMA_VERSION = 6
 
         /**
          * Every book column except `text`: reading a book row must not pull the whole book off disk
          * (100 books' rows took 116 ms with it, 11 ms without; SPEC §8.4).
          */
         private const val BOOK_COLUMNS = "id, file_sha256, title, extractor, chapter_strategy, page_offset, embed_model, " +
-            "embed_dim, embed_status, created_at, format, page_kind, summary_model, summary_prompt, summary_status"
+            "embed_dim, embed_status, created_at, format, kind, page_kind, summary_model, summary_prompt, summary_status"
 
         /** SPEC §15.9: one vector per paragraph and model. */
         private val EMBEDDING_TABLE = """
@@ -630,6 +635,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
               created_at TEXT NOT NULL,
               format TEXT NOT NULL DEFAULT 'pdf',
               page_kind TEXT NOT NULL DEFAULT 'pdf',
+              kind TEXT NOT NULL DEFAULT 'book',
               summary_model TEXT,
               summary_prompt TEXT,
               summary_status TEXT NOT NULL DEFAULT 'none' 
