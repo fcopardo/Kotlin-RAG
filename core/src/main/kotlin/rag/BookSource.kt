@@ -6,10 +6,10 @@ import java.util.ServiceLoader
 import java.util.zip.ZipException
 import java.util.zip.ZipFile
 
-enum class BookFormat { PDF, EPUB, TEXT, HTML, DOCX }
+enum class BookFormat { PDF, EPUB, TEXT, HTML, DOCX, CODE }
 
 /** What a book's pages are: PDF pages, printed pages from an EPUB page list, or synthetic locations. */
-enum class PageKind { PDF, PRINT, LOCATION }
+enum class PageKind { PDF, PRINT, LOCATION, FILE }
 
 data class ReadOptions(
     /** PDF pages holding the table of contents (PDF only). */

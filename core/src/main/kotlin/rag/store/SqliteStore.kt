@@ -39,6 +39,9 @@ data class BookRow(
     fun model(name: String): BookModel? = models.firstOrNull { it.model == name }
 }
 
+/** A file in a code project (SPEC §18.3). */
+data class ProjectFile(val path: String, val sha256: String, val charStart: Int, val charEnd: Int)
+
 /** One embedding model's vectors on a book: dimension and "partial" or "complete". */
 data class BookModel(val model: String, val dim: Int, val status: String)
 
@@ -105,7 +108,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         SCHEMA.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { db.execute(it) }
         migrate()
         // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;
-        // book subjects and vectors are 5 (new tables only, created above); the document kind is 6 (§18.3).
+        // book subjects and vectors are 5 (new tables only, created above); the document kind is 6 (§18.3);
+        // code projects' files are 7 (§18.3, a new table only).
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -530,6 +534,18 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         ) { it.long(1) }
     }
 
+    /** Project files for a book, ordered by path. */
+    fun projectFiles(bookId: Long): List<ProjectFile> =
+        query("SELECT path, sha256, char_start, char_end FROM project_file WHERE book_id = ? ORDER BY path", bookId) {
+            ProjectFile(it.string(1)!!, it.string(2)!!, it.int(3), it.int(4))
+        }
+
+    /** Records a code project's files (SPEC §18.3). A path already recorded for the book is an error. */
+    fun insertProjectFiles(bookId: Long, files: List<ProjectFile>) = transaction {
+        batch("INSERT INTO project_file(book_id, path, sha256, char_start, char_end) VALUES (?,?,?,?,?)",
+            files.map { listOf(bookId, it.path, it.sha256, it.charStart, it.charEnd) })
+    }
+
     /** Paragraph ids inside `[from, to]` matching an FTS5 query, best BM25 first. */
     fun paragraphsInSpan(matchQuery: String, bookId: Long, from: Int, to: Int, limit: Int = 1): List<Long> = query(
         """SELECT para_fts.rowid FROM para_fts JOIN unit u ON u.id = para_fts.rowid
@@ -573,7 +589,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 6
+        const val SCHEMA_VERSION = 7
 
         /**
          * Every book column except `text`: reading a book row must not pull the whole book off disk
@@ -699,6 +715,14 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
               PRIMARY KEY (book_id, model)
             );
             $SUMMARY_TABLE;
+            CREATE TABLE IF NOT EXISTS project_file (
+              book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+              path TEXT NOT NULL,
+              sha256 TEXT NOT NULL,
+              char_start INTEGER NOT NULL,
+              char_end INTEGER NOT NULL,
+              PRIMARY KEY (book_id, path)
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS para_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
             CREATE VIRTUAL TABLE IF NOT EXISTS phrase_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
             CREATE VIRTUAL TABLE IF NOT EXISTS summary_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61')

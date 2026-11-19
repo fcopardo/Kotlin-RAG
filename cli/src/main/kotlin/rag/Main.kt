@@ -366,6 +366,7 @@ private class ServeCommand : ServerCommand("serve") {
 /** "p. 13", "p. 13-15", "loc 3-loc 5" → shortened to "loc 3-5". */
 internal fun citation(kind: String, start: String, end: String): String = when {
     kind == "location" -> if (start == end) start else "$start-${end.removePrefix("loc ")}"
+    kind == "file" -> if (start == end) start else "$start–$end"  // en dash U+2013
     start == end -> "p. $start"
     else -> "p. $start-$end"
 }

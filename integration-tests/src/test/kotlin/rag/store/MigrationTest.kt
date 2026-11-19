@@ -92,4 +92,29 @@ class MigrationTest {
         // Opening again is a no-op.
         SqliteStore(path).use { assertEquals("book", it.book(before.second)!!.kind) }
     }
+
+    @Test
+    fun `a version 6 database gains the project files and answers the same`(@TempDir dir: File) {
+        val path = File(dir, "v6.db").path
+        val pdf = SampleBook.write(File(dir, "sample.pdf"))
+        val before = SqliteStore(path).use { store ->
+            val bookId = Indexer(store).index(pdf, embedder = FakeEmbedder()).bookId
+            Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey } to bookId
+        }
+        // Back to the version 6 shape: drop the project_file table and set version to 6.
+        SqlDriver.default().open(path).use { s ->
+            s.execute("DROP TABLE project_file")
+            s.execute("PRAGMA user_version = 6")
+        }
+
+        SqliteStore(path).use { store ->
+            // The table should be recreated, version should be 7, and project files should be empty
+            assertEquals("book", store.book(before.second)!!.kind, "an existing book is a book")
+            assertEquals(emptyList<ProjectFile>(), store.projectFiles(before.second))
+            assertEquals(SqliteStore.SCHEMA_VERSION, store.db.query("PRAGMA user_version") { it.int(1) }.single())
+            assertEquals(before.first, Searcher(store, FakeEmbedder()).search("bravo", mode = Mode.VECTOR).map { it.paragraph.unitKey })
+        }
+        // Opening again is a no-op.
+        SqliteStore(path).use { assertEquals(emptyList<ProjectFile>(), it.projectFiles(before.second)) }
+    }
 }

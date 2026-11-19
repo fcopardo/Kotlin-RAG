@@ -123,4 +123,75 @@ class SegmenterTest {
             }
         }
     }
+
+    // --- explicit paragraph blocks (code functions, SPEC §18.2) ---
+
+    private fun blockBook(text: String, vararg blocks: String) = blocks.map { b ->
+        val start = text.indexOf(b).also { require(it >= 0) { "not in text: $b" } }
+        start until start + b.length
+    }.let { ranges -> ExtractedBook(text, intArrayOf(0), ranges, blocks = ranges) }
+
+    private fun ExtractedBook.paragraphTexts() = paragraphs().map { text.substring(it.start, it.end + 1) }
+
+    @Test
+    fun `an explicit block with a blank line inside is one paragraph of lines`() {
+        val fn = "fun foo() {\n    a()\n\n    b()\n}"
+        val text = "Intro text.\n\n$fn\n\nAfter."
+        val b = blockBook(text, fn)
+
+        assertEquals(listOf("Intro text.", fn, "After."), b.paragraphTexts())
+        val code = b.paragraphs()[1]
+        assertTrue(code.isCode)
+        assertEquals(listOf("fun foo() {", "a()", "b()", "}"), b.phraseTexts(code).map { it.trim() })
+        // Without the block, the blank line would cut the function in two.
+        assertEquals(4, book(text, b.codeRanges).paragraphs().size)
+    }
+
+    @Test
+    fun `adjacent explicit blocks stay separate paragraphs`() {
+        val a = "fun a() {\n}"
+        val c = "fun c() {\n}"
+        val text = "$a\n$c"
+
+        assertEquals(listOf(a, c), blockBook(text, a, c).paragraphTexts())
+        assertEquals(1, book(text, listOf(text.indices)).paragraphs().size, "without blocks they would merge")
+    }
+
+    @Test
+    fun `text between explicit blocks is still split at blank lines`() {
+        val fn = "fun f() {\n}"
+        val text = "One.\n\nTwo.\n$fn\nThree.\n\nFour."
+
+        assertEquals(listOf("One.", "Two.", fn, "Three.", "Four."), blockBook(text, fn).paragraphTexts())
+    }
+
+    @Test
+    fun `an explicit block over the cap is split at line ends`() {
+        val fn = (1..12).joinToString("\n", "fun long() {\n", "\n}") { "    val v$it = compute(alpha, beta, gamma)" }
+        val text = "Intro.\n\n$fn"
+        val b = blockBook(text, fn)
+        val start = text.indexOf(fn)
+
+        val code = Segmenter(maxTokens = 20).paragraphs(b, 0, text.length - 1).filter { it.isCode }
+        assertTrue(code.size > 1, "split into several paragraphs")
+        assertEquals(start, code.first().start)
+        assertEquals(text.length - 1, code.last().end)
+        code.forEach { p -> assertTrue(p.end == text.length - 1 || text[p.end + 1] == '\n', "ends at a line end") }
+    }
+
+    @Test
+    fun `explicit blocks clipped to the range keep every span trimmed and inside it`() {
+        val fn = "fun g() {\n    x()\n\n}"
+        val text = "Lead.\n\n$fn\n\n  Tail.  "
+        val b = blockBook(text, fn)
+        val from = text.indexOf("x()")
+
+        val paragraphs = segmenter.paragraphs(b, from, text.length - 1)
+        assertEquals(listOf("x()\n\n}", "Tail."), paragraphs.map { text.substring(it.start, it.end + 1) })
+        paragraphs.flatMap { listOf(it.start..it.end) + it.phrases.map { ph -> ph.start..ph.end } }.forEach { r ->
+            val s = text.substring(r.first, r.last + 1)
+            assertEquals(s.trim(), s)
+            assertTrue(r.first >= from)
+        }
+    }
 }

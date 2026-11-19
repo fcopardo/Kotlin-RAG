@@ -38,6 +38,37 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
     /** Paragraphs in `book.text[from..to]` (inclusive). */
     fun paragraphs(book: ExtractedBook, from: Int, to: Int): List<ParagraphSpan> {
         val text = book.text
+        val blocks = book.blocks?.let { explicit -> withExplicitBlocks(text, explicit, from, to) } ?: gapBlocks(text, from, to)
+
+        return blocks.mapNotNull { trim(text, it) }.flatMap { block ->
+            val isCode = book.codeRanges.any { it.first <= block.last && block.first <= it.last }
+            val pieces = if (isCode) lines(text, block) else sentences(text, block)
+            pack(text, pieces).map { group ->
+                ParagraphSpan(group.first().start, group.last().end, isCode, group)
+            }
+        }
+    }
+
+    /**
+     * The explicit [blocks] that overlap `text[from..to]`, each one paragraph whatever blank lines it
+     * holds, with the text between them split at blank lines as usual.
+     */
+    private fun withExplicitBlocks(text: String, blocks: List<IntRange>, from: Int, to: Int): List<IntRange> {
+        val result = mutableListOf<IntRange>()
+        var current = from
+        for (block in blocks) {
+            if (block.last < from || block.first > to) continue
+            val clipped = maxOf(block.first, from)..minOf(block.last, to)
+            if (current < clipped.first) result += gapBlocks(text, current, clipped.first - 1)
+            result += clipped
+            current = clipped.last + 1
+        }
+        if (current <= to) result += gapBlocks(text, current, to)
+        return result
+    }
+
+    /** Paragraph blocks of `text[from..to]` (inclusive), split at blank lines; not yet trimmed. */
+    private fun gapBlocks(text: String, from: Int, to: Int): List<IntRange> {
         val blocks = mutableListOf<IntRange>()
         var start = from
         // Gaps are `\n[ \t]*\n`, found left to right without overlapping, like the regex they replace.
@@ -56,14 +87,7 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
             i++
         }
         blocks += start..to
-
-        return blocks.mapNotNull { trim(text, it) }.flatMap { block ->
-            val isCode = book.codeRanges.any { it.first <= block.last && block.first <= it.last }
-            val pieces = if (isCode) lines(text, block) else sentences(text, block)
-            pack(text, pieces).map { group ->
-                ParagraphSpan(group.first().start, group.last().end, isCode, group)
-            }
-        }
+        return blocks
     }
 
     // --- phrases ---

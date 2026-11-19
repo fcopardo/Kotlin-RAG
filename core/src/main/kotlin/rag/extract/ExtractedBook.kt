@@ -11,9 +11,16 @@ class ExtractedBook(
     val codeRanges: List<IntRange> = emptyList(),
     /** Display names of pages ("xii", "57", "loc 3"); null means the page number itself (PDF). */
     val pageLabels: List<String>? = null,
+    /** Char ranges (inclusive) that are each one paragraph, whatever blank lines they hold; null = split at blank lines everywhere. */
+    val blocks: List<IntRange>? = null,
 ) {
     init {
         require(pageLabels == null || pageLabels.size == pageStarts.size) { "one label per page" }
+        if (blocks != null) {
+            require(blocks.all { it.first >= 0 && it.last < text.length }) { "blocks must be within text" }
+            require(blocks.zipWithNext().all { it.first.last < it.second.first }) { "blocks must not overlap" }
+            require(blocks.zipWithNext().all { it.first.first <= it.second.first }) { "blocks must be sorted" }
+        }
     }
 
     val pageCount: Int get() = pageStarts.size
