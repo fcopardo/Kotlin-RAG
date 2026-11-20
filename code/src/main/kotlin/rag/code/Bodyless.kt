@@ -20,13 +20,14 @@ internal object Bodyless {
      *    in [original], `fo`, is at or after `to`, OR that is not blank in [original], has indent ≤ I, and
      *    whose `fo` is not inside a child block opened at or after `first` (`first <= open < fo <= close`).
      *    With no such line it stops at `to`.
-     * 4. Its end = the last offset before the stop point (and before `to`) that is non-whitespace in [masked].
+     * 4. Its end = the last offset before the stop point (and before `to`) that is non-whitespace in
+ *    [uncommented] (code or a literal, not a comment). [uncommented] defaults to [masked].
      * 5. Continue with the first line after the one holding its end.
      *
      * Child block lookups must be binary searches over [children] (they are sorted and disjoint), so a
      * region with 20,000 blocks stays linear-ish.
      */
-    fun find(masked: String, original: String, lines: Lines, from: Int, to: Int, children: List<Block>, rules: FamilyRules): List<BodylessFunction> {
+    fun find(masked: String, original: String, lines: Lines, from: Int, to: Int, children: List<Block>, rules: FamilyRules, uncommented: String = masked): List<BodylessFunction> {
         val result = mutableListOf<BodylessFunction>()
         var line = lines.lineOf(from)
         while (line < lines.count && lines.start(line) < to) {
@@ -68,7 +69,7 @@ internal object Bodyless {
             }
             // 4. Its last code character before the stop.
             var end = minOf(stop, to) - 1
-            while (end > first && masked[end].isWhitespace()) end--
+            while (end > first && uncommented[end].isWhitespace()) end--
             result += BodylessFunction(name, first, end)
             // 5. Go on after it.
             line = lines.lineOf(end) + 1

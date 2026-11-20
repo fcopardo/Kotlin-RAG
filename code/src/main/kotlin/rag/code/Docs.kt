@@ -9,7 +9,8 @@ internal object Docs {
      *
      * From the line of [start], look at the line above, repeatedly. Stop when: there is none; it holds
      * [floor] or anything before it (its start ≤ [floor]); it is blank in [original]; or it is neither a
-     * comment line (blank in [masked], not blank in [original]) nor an annotation line (its [original]
+     * comment line (blank in [masked], not blank in [original]; pass [Masked.uncommented] as [masked] so a
+     * line inside a multi-line string is not a comment line) nor an annotation line (its [original]
      * text, trimmed, starts with one of [prefixes]). Otherwise it becomes part of the declaration.
      * Returns the first non-blank offset (in [original]) of the topmost line taken, or [start].
      */

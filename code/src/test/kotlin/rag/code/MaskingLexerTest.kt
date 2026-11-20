@@ -269,6 +269,16 @@ class MaskingLexerTest {
         }
 
     @Test
+    fun `uncommented keeps literals and blanks only comments`() {
+        val t = "val s = \"{\" // c {\n/* d */ val r = \"\"\"x\n}\"\"\""
+        val r = MaskingLexer.mask(t, KOTLIN)
+        assertEquals(visible("val s = \"{\" " + blank("// c {") + "\n" + blank("/* d */") + " val r = \"\"\"x\n}\"\"\""), visible(r.uncommented))
+        val py = "x = '#' # note\n"
+        assertEquals(visible("x = '#' " + blank("# note") + "\n"), visible(MaskingLexer.mask(py, PYTHON).uncommented))
+        assertEquals("a // b", MaskingLexer.mask("a // b", Language.OTHER).uncommented)
+    }
+
+    @Test
     fun `a large file is masked in one pass`() {
         val line = "fun f(x: Int) { val s = \"{\" /* } */ // {\n"
         val text = line.repeat(50_000)

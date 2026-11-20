@@ -62,13 +62,13 @@ object DeclarationFinder {
         val lexed = MaskingLexer.mask(text, language)
         val warnings = lexed.warnings.toMutableList()
         if (rules == null || text.isEmpty()) return Declarations(emptyList(), warnings)
-        val walk = Walk(text, lexed.text, Lines(text), rules)
+        val walk = Walk(text, lexed.text, lexed.uncommented, Lines(text), rules)
         val roots = BlockTree.build(lexed.text, text, walk.lines, warnings)
         walk.region(from = 0, to = text.length, blocks = roots, parentOpen = -1, parent = null)
         return Declarations(walk.items, warnings)
     }
 
-    private class Walk(val text: String, val masked: String, val lines: Lines, val rules: FamilyRules) {
+    private class Walk(val text: String, val masked: String, val uncommented: String, val lines: Lines, val rules: FamilyRules) {
         val items = mutableListOf<Declaration>()
 
         /**
@@ -77,7 +77,7 @@ object DeclarationFinder {
          * file); [parent] = index in [items] of the enclosing declaration, or null.
          */
         fun region(from: Int, to: Int, blocks: List<Block>, parentOpen: Int, parent: Int?) {
-            val bodyless = Bodyless.find(masked, text, lines, from, to, blocks, rules)
+            val bodyless = Bodyless.find(masked, text, lines, from, to, blocks, rules, uncommented)
             val depth = if (parent == null) 0 else items[parent].depth + 1
             var floor = parentOpen          // last offset an item's docs may not reach (Docs.start's floor)
             var bi = 0                      // next block
@@ -89,7 +89,7 @@ object DeclarationFinder {
                     val f = bodyless[fi++]
                     // Blocks opened inside this function are part of it: skip them.
                     while (bi < blocks.size && blocks[bi].open <= f.end) bi++
-                    add(DeclarationKind.FUNCTION, f.name, Docs.start(masked, text, lines, f.start, floor, rules.annotationPrefixes), f.end, depth, parent)
+                    add(DeclarationKind.FUNCTION, f.name, Docs.start(uncommented, text, lines, f.start, floor, rules.annotationPrefixes), f.end, depth, parent)
                     floor = f.end
                     continue
                 }
@@ -98,11 +98,11 @@ object DeclarationFinder {
                     val h = Headers.of(masked, lines, b.open, parentOpen)
                     when (val c = rules.classify(h.text)) {
                         is Classified.Class -> {
-                            val index = add(DeclarationKind.CLASS, c.name, Docs.start(masked, text, lines, h.start, floor, rules.annotationPrefixes), b.close, depth, parent)
+                            val index = add(DeclarationKind.CLASS, c.name, Docs.start(uncommented, text, lines, h.start, floor, rules.annotationPrefixes), b.close, depth, parent)
                             region(b.open + 1, b.close, b.children, b.open, index)
                         }
                         is Classified.Function ->
-                            add(DeclarationKind.FUNCTION, c.name, Docs.start(masked, text, lines, h.start, floor, rules.annotationPrefixes), b.close, depth, parent)
+                            add(DeclarationKind.FUNCTION, c.name, Docs.start(uncommented, text, lines, h.start, floor, rules.annotationPrefixes), b.close, depth, parent)
                         Classified.Transparent -> region(b.open + 1, b.close, b.children, b.open, parent)
                         null -> {}
                     }

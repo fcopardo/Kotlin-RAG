@@ -1,7 +1,11 @@
 package rag.code
 
-/** What [MaskingLexer.mask] returns: the masked text, and anything it could not close. */
-class Masked(val text: String, val warnings: List<String>)
+/**
+ * What [MaskingLexer.mask] returns: the masked [text], anything it could not close, and [uncommented]:
+ * the source with only its comments blanked (literals kept), same length and line breaks. It tells a
+ * comment line from a line inside a multi-line string, and lets a declaration end on a literal.
+ */
+class Masked(val text: String, val warnings: List<String>, val uncommented: String = text)
 
 /**
  * Blanks out comments and string, character, template and regex literals, so declarations can be
@@ -36,7 +40,11 @@ private val PYTHON_PREFIXES = setOf("r", "b", "f", "u", "rb", "br", "fr", "rf")
 private class Scanner(private val text: String, private val language: Language) {
     private val n = text.length
     private val out = text.toCharArray()
+    private val uncommented = text.toCharArray()
     private val warnings = mutableListOf<String>()
+
+    /** Set by [literal]: whether the range it just returned was a comment. */
+    private var wasComment = false
 
     /** The last code character that wasn't whitespace (JS regex rule); its offset, or -1 after a literal. */
     private var lastSig = '\u0000'
@@ -44,7 +52,7 @@ private class Scanner(private val text: String, private val language: Language) 
 
     fun run(): Masked {
         code(0, null)
-        return Masked(String(out), warnings)
+        return Masked(String(out), warnings, String(uncommented))
     }
 
     private fun at(k: Int) = if (k in 0 until n) text[k] else '\u0000'
@@ -82,6 +90,7 @@ private class Scanner(private val text: String, private val language: Language) 
             val end = literal(i)
             if (end > i) {
                 blank(i, end)
+                if (wasComment) for (k in i until minOf(end, n)) if (uncommented[k] != '\n') uncommented[k] = ' '
                 i = end
                 continue
             }
@@ -96,10 +105,16 @@ private class Scanner(private val text: String, private val language: Language) 
 
     /** The end (exclusive) of a comment or literal starting at [i], or -1. */
     private fun literal(i: Int): Int {
-        if (language == Language.PYTHON) return python(i)
+        wasComment = false
+        if (language == Language.PYTHON) {
+            if (text[i] == '#') wasComment = true
+            return python(i)
+        }
         val c = text[i]
-        if (c == '/' && at(i + 1) == '/') return lineEnd(i)
-        if (c == '/' && at(i + 1) == '*') return blockComment(i)
+        if (c == '/' && (at(i + 1) == '/' || at(i + 1) == '*')) {
+            wasComment = true
+            return if (at(i + 1) == '/') lineEnd(i) else blockComment(i)
+        }
         val end = when (language) {
             Language.KOTLIN -> kotlin(i)
             Language.JAVA -> java(i)

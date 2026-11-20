@@ -242,6 +242,14 @@ class DeclarationFinderCoreTest {
     }
 
     @Test
+    fun `a line inside a multi-line string is not a doc comment, and a function may end on a literal`() {
+        val t = "val s = \"\"\"\n  text\n\"\"\"\nfn f() {}\nfn g() = \"done\""
+        val items = find(t).items.associateBy { it.name }
+        assertEquals(t.indexOf("fn f"), items.getValue("f").start)
+        assertEquals(t.length - 1, items.getValue("g").end)
+    }
+
+    @Test
     fun `an unclosed block closes at the end, with a warning`() {
         val t = "class A {\n  fn f() {\n  }\n\n"
         val d = find(t)
