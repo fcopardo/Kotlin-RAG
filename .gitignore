@@ -10,3 +10,4 @@ build/
 models/
 local.properties
 *.hprof
+.DS_Store
