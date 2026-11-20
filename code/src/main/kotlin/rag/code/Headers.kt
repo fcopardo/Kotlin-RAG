@@ -16,7 +16,9 @@ internal object Headers {
      * 2. Only if it started at the line start (no boundary, floor not on this line): while the collected
      *    text (from its start to [open]) needs more, prepend the previous line. It needs more when it is
      *    blank, OR has more `)`+`]` than `(`+`[`, OR, trimmed, starts with `:`, `->`, `,` or one of
-     *    [CONTINUATION_WORDS] as a whole word. Stop without prepending when there is no previous line,
+     *    [CONTINUATION_WORDS] as a whole word, OR the previous line, trimmed, ends with `,`, `:`, `->` or one of
+     *    [CONTINUATION_WORDS] and holds no `{`, `}` or `;` (a Rust `where` clause, `implements A,` above `B {`;
+     *    not `},` between enum constants). Stop without prepending when there is no previous line,
      *    or the previous line is blank in [masked], or its masked text, trimmed, ends with `;`, `{` or `}`.
      *    If the previous line holds [floor], prepend only its part after [floor], then stop.
      * 3. text = the collected masked text with every whitespace run replaced by one space, trimmed.
@@ -39,10 +41,11 @@ internal object Headers {
 
         // 2. Extend upward, only when the header starts at the line start.
         if (start == lineStart) {
-            while (needsMore(masked, start, open)) {
+            while (true) {
                 val prev = lines.lineOf(start) - 1
                 if (prev < 0 || lines.isBlank(prev, masked)) break
                 val prevText = masked.substring(lines.start(prev), lines.end(prev)).trim()
+                if (!needsMore(masked, start, open) && !endsOpen(prevText)) break
                 if (prevText.endsWith(';') || prevText.endsWith('{') || prevText.endsWith('}')) break
                 if (lines.start(prev) <= floor) {
                     start = floor + 1
@@ -60,6 +63,15 @@ internal object Headers {
     }
 
     private val WHITESPACE = Regex("\\s+")
+
+    /**
+     * A line that leaves the header open: it ends with `,`, `:`, `->` or a continuation word (`where`,
+     * `implements`…), and holds no `{`, `}` or `;` (`},` between two enum constants closes a block).
+     */
+    private fun endsOpen(t: String): Boolean =
+        t.none { it == '{' || it == '}' || it == ';' } &&
+            (t.endsWith(",") || t.endsWith(":") || t.endsWith("->") ||
+                CONTINUATION_WORDS.any { w -> t == w || (t.endsWith(w) && !t[t.length - w.length - 1].isLetterOrDigit()) })
 
     /** Blank, more closers than openers, or starting with a continuation (`:`, `->`, `,`, `where`…). */
     private fun needsMore(masked: String, start: Int, open: Int): Boolean {

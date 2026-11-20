@@ -37,6 +37,18 @@ class HeadersTest {
     }
 
     @Test
+    fun `a line above that ends open is taken - where clauses, trailing commas, colons, arrows`() {
+        assertEquals("impl<T: Debug> Wrapper<T> where T: Clone,", text("impl<T: Debug> Wrapper<T>\nwhere\n    T: Clone,\n{"))
+        assertEquals("class A implements B, C", text("class A implements B,\n    C {"))
+        assertEquals("class A( val x: Int, ) : B(), C", text("class A(\n    val x: Int,\n) : B(),\n    C {"))
+        assertEquals("class A : B", text("class A :\n    B {"))
+        assertEquals("fn f() -> Result<(), E>", text("fn f() ->\n    Result<(), E> {"))
+        assertEquals("class A implements B", text("class A implements\n    B {"))
+        assertEquals("fn g()", text("let x = (a,\n  b);\nfn g() {"), "a statement ending in ; is never taken")
+        assertEquals("INCH(2.54)", text("    CM(1) {\n    },\n    INCH(2.54) {"), "a line with a brace is never taken for ending open")
+    }
+
+    @Test
     fun `the statement on the line above is not taken`() {
         val t = "val p = 1\nfn f() {"
         assertEquals(Header("fn f()", t.indexOf("fn")), header(t))

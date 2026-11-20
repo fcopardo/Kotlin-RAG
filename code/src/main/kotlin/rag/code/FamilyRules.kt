@@ -41,5 +41,8 @@ internal fun rulesFor(language: Language): FamilyRules? = when (language) {
     Language.JAVA -> JavaRules
     Language.CSHARP -> CSharpRules
     Language.JS_TS -> JsRules
+    Language.GO -> GoRules
+    Language.RUST -> RustRules
+    Language.SWIFT -> SwiftRules
     else -> null
 }
