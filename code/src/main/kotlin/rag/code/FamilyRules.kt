@@ -40,5 +40,6 @@ internal fun rulesFor(language: Language): FamilyRules? = when (language) {
     Language.KOTLIN -> KotlinRules
     Language.JAVA -> JavaRules
     Language.CSHARP -> CSharpRules
+    Language.JS_TS -> JsRules
     else -> null
 }
