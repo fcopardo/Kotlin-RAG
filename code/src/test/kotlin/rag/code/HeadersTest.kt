@@ -46,6 +46,10 @@ class HeadersTest {
         assertEquals("class A implements B", text("class A implements\n    B {"))
         assertEquals("fn g()", text("let x = (a,\n  b);\nfn g() {"), "a statement ending in ; is never taken")
         assertEquals("INCH(2.54)", text("    CM(1) {\n    },\n    INCH(2.54) {"), "a line with a brace is never taken for ending open")
+        assertEquals("explicit Circle(double r) : r_(r)", text("public:\n    explicit Circle(double r) : r_(r) {"), "an access specifier is not an open line")
+        assertEquals("void f()", text("  private slots:\n  void f() {"))
+        assertEquals("x()", text("case 1:\n  x() {"))
+        assertEquals("class A : B", text("class A :\n    B {"), "a colon after two words still opens")
     }
 
     @Test

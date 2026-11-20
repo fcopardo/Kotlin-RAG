@@ -44,5 +44,6 @@ internal fun rulesFor(language: Language): FamilyRules? = when (language) {
     Language.GO -> GoRules
     Language.RUST -> RustRules
     Language.SWIFT -> SwiftRules
+    Language.C_CPP -> CppRules
     else -> null
 }

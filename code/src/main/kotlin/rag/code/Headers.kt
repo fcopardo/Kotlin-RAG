@@ -18,7 +18,8 @@ internal object Headers {
      *    blank, OR has more `)`+`]` than `(`+`[`, OR, trimmed, starts with `:`, `->`, `,` or one of
      *    [CONTINUATION_WORDS] as a whole word, OR the previous line, trimmed, ends with `,`, `:`, `->` or one of
      *    [CONTINUATION_WORDS] and holds no `{`, `}` or `;` (a Rust `where` clause, `implements A,` above `B {`;
-     *    not `},` between enum constants). Stop without prepending when there is no previous line,
+     *    not `},` between enum constants; a `:` ending a label such as `public:` or `case 1:` does not count).
+     *    Stop without prepending when there is no previous line,
      *    or the previous line is blank in [masked], or its masked text, trimmed, ends with `;`, `{` or `}`.
      *    If the previous line holds [floor], prepend only its part after [floor], then stop.
      * 3. text = the collected masked text with every whitespace run replaced by one space, trimmed.
@@ -70,8 +71,17 @@ internal object Headers {
      */
     private fun endsOpen(t: String): Boolean =
         t.none { it == '{' || it == '}' || it == ';' } &&
-            (t.endsWith(",") || t.endsWith(":") || t.endsWith("->") ||
+            (t.endsWith(",") || (t.endsWith(":") && !isLabel(t)) || t.endsWith("->") ||
                 CONTINUATION_WORDS.any { w -> t == w || (t.endsWith(w) && !t[t.length - w.length - 1].isLetterOrDigit()) })
+
+    private val LABEL_WORDS = setOf("public", "private", "protected", "internal", "slots", "signals", "Q_SLOTS", "Q_SIGNALS", "default")
+
+    /** `public:`, `default:`, `case X:`, `name:`, `a::b:`: a label or access specifier, not an open header. */
+    private fun isLabel(t: String): Boolean {
+        val body = t.removeSuffix(":").trim()
+        val words = body.split(' ').filter { it.isNotEmpty() }
+        return words.size <= 1 || words.first() == "case" || words.last() in LABEL_WORDS || t.endsWith("::")
+    }
 
     /** Blank, more closers than openers, or starting with a continuation (`:`, `->`, `,`, `where`…). */
     private fun needsMore(masked: String, start: Int, open: Int): Boolean {
