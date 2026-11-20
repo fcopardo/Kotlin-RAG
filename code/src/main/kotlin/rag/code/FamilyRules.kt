@@ -38,5 +38,7 @@ internal interface FamilyRules {
 /** The rules of each family; null until the family's step adds them (plan steps 2b–2f). */
 internal fun rulesFor(language: Language): FamilyRules? = when (language) {
     Language.KOTLIN -> KotlinRules
+    Language.JAVA -> JavaRules
+    Language.CSHARP -> CSharpRules
     else -> null
 }
