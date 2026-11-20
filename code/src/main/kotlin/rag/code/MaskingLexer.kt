@@ -5,7 +5,16 @@ package rag.code
  * the source with only its comments blanked (literals kept), same length and line breaks. It tells a
  * comment line from a line inside a multi-line string, and lets a declaration end on a literal.
  */
-class Masked(val text: String, val warnings: List<String>, val uncommented: String = text)
+class Masked(
+    val text: String,
+    val warnings: List<String>,
+    val uncommented: String = text,
+    /** Offsets of the `'\n'` characters inside a literal (a multi-line string), ascending. */
+    val literalBreaks: IntArray = IntArray(0),
+) {
+    /** True when the line break at [offset] is inside a literal, so the next line continues it. */
+    fun breakInLiteral(offset: Int): Boolean = literalBreaks.binarySearch(offset) >= 0
+}
 
 /**
  * Blanks out comments and string, character, template and regex literals, so declarations can be
@@ -42,6 +51,7 @@ private class Scanner(private val text: String, private val language: Language) 
     private val out = text.toCharArray()
     private val uncommented = text.toCharArray()
     private val warnings = mutableListOf<String>()
+    private val breaks = mutableListOf<Int>()
 
     /** Set by [literal]: whether the range it just returned was a comment. */
     private var wasComment = false
@@ -52,7 +62,7 @@ private class Scanner(private val text: String, private val language: Language) 
 
     fun run(): Masked {
         code(0, null)
-        return Masked(String(out), warnings, String(uncommented))
+        return Masked(String(out), warnings, String(uncommented), breaks.toIntArray())
     }
 
     private fun at(k: Int) = if (k in 0 until n) text[k] else '\u0000'
@@ -91,6 +101,7 @@ private class Scanner(private val text: String, private val language: Language) 
             if (end > i) {
                 blank(i, end)
                 if (wasComment) for (k in i until minOf(end, n)) if (uncommented[k] != '\n') uncommented[k] = ' '
+                if (!wasComment && closer == null) for (k in i until minOf(end, n)) if (text[k] == '\n') breaks += k
                 i = end
                 continue
             }

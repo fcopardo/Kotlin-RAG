@@ -288,4 +288,14 @@ class MaskingLexerTest {
         assertEquals(text.length, out.length)
         assertTrue(ms < 2_000, "took $ms ms for ${text.length} chars")
     }
+
+    @Test
+    fun `line breaks inside multi-line literals are listed`() {
+        val t = "def f():\n    \"\"\"Doc.\n\nMore.\n    \"\"\"\n    # a\n    # b\n    x = f\"\"\"a\n{1}\"\"\"\n"
+        val m = MaskingLexer.mask(t, PYTHON)
+        val inside = t.indices.filter { t[it] == '\n' && m.breakInLiteral(it) }
+        assertEquals(listOf(t.indexOf("Doc.") + 4, t.indexOf("Doc.") + 5, t.indexOf("More.") + 5, t.indexOf("f\"\"\"a") + 5), inside)
+        assertEquals(0, MaskingLexer.mask("val s = \"\"\"a\nb\"\"\"", KOTLIN).literalBreaks.size - 1)
+        assertEquals(0, MaskingLexer.mask("// x\n/* a\nb */", KOTLIN).literalBreaks.size, "comments are not literals")
+    }
 }

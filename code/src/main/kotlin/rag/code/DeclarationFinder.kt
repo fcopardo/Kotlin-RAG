@@ -2,7 +2,7 @@ package rag.code
 
 /**
  * Finds the classes and functions of a source file (SPEC §18.4, plan step 2). The algorithm is shared
- * by every brace language; only [FamilyRules] differ. Python, which nests by indentation, comes later.
+ * by every brace language; only [FamilyRules] differ. Python, which nests by indentation, has [PythonFinder].
  *
  * All offsets are into the original text. Every step works on [MaskingLexer]'s masked text, so braces,
  * parentheses and semicolons inside comments and literals never count.
@@ -56,7 +56,9 @@ package rag.code
  *    Without rules (a family not done yet, [Language.OTHER]) there are no items.
  */
 object DeclarationFinder {
-    fun find(text: String, language: Language): Declarations = find(text, language, rulesFor(language))
+    fun find(text: String, language: Language): Declarations =
+        if (language == Language.PYTHON) PythonFinder.find(text, MaskingLexer.mask(text, language))
+        else find(text, language, rulesFor(language))
 
     internal fun find(text: String, language: Language, rules: FamilyRules?): Declarations {
         val lexed = MaskingLexer.mask(text, language)
