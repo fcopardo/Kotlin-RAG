@@ -53,4 +53,15 @@ class NormalizerTest {
         assertEquals(16, a.length)
         assertNotEquals(a, Normalizer.hash("The bike went really slow."))
     }
+
+    @Test
+    fun `normalizeSource keeps indentation, tabs and blank lines`() {
+        val raw = "\uFEFF\r\n\n  \nclass A {\r\n\tfun f() {  \r\n\r\n\r\n\t\treturn 1\t\n\t}\n}\n\n\n"
+        assertEquals("class A {\n\tfun f() {\n\n\n\t\treturn 1\n\t}\n}", Normalizer.normalizeSource(raw))
+        assertEquals("def f():\n    pass", Normalizer.normalizeSource("def f():\r    pass\r"))
+        assertEquals("x\u200B = \"ﬁ\"".replace("\u200B", ""), Normalizer.normalizeSource("x\u200B = \"ﬁ\""), "NFC keeps ligatures")
+        assertEquals("e\u0301".let { java.text.Normalizer.normalize(it, java.text.Normalizer.Form.NFC) }, Normalizer.normalizeSource("e\u0301"))
+        assertEquals("    indented first line", Normalizer.normalizeSource("\n\n    indented first line\n"))
+        assertEquals("", Normalizer.normalizeSource(" \n\t\n"))
+    }
 }

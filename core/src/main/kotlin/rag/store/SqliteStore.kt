@@ -39,7 +39,7 @@ data class BookRow(
     fun model(name: String): BookModel? = models.firstOrNull { it.model == name }
 }
 
-/** A file in a code project (SPEC §18.3). */
+/** A file in a code project (SPEC §18.3): relative `/` path, SHA-256 (hex) of its bytes, and its inclusive char range in the book text. */
 data class ProjectFile(val path: String, val sha256: String, val charStart: Int, val charEnd: Int)
 
 /** One embedding model's vectors on a book: dimension and "partial" or "complete". */

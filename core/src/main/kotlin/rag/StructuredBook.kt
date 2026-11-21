@@ -1,6 +1,7 @@
 package rag
 
 import rag.extract.ExtractedBook
+import rag.store.ProjectFile
 import rag.structure.Chapter
 import rag.structure.ChapterPlan
 import rag.structure.SegmentedChapter
@@ -20,6 +21,8 @@ class StructuredBook(
     val subjects: List<String> = emptyList(),
     /** The kind of document, which decides what its levels are called (SPEC §18.2). */
     val kind: String = DocumentKinds.BOOK.name,
+    /** A code project's files, in text order, for the `project_file` table (SPEC §18.4); empty for documents. */
+    val projectFiles: List<ProjectFile> = emptyList(),
 ) {
     fun text(chapter: Chapter): String = book.text.substring(chapter.charStart, chapter.charEnd + 1)
 

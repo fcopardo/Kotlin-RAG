@@ -7,6 +7,7 @@ import rag.RagException
 import rag.ReadOptions
 import rag.StructuredBook
 import rag.epub.EpubTextBuilder
+import rag.extract.DocumentCharset
 import rag.extract.Normalizer
 import java.io.File
 

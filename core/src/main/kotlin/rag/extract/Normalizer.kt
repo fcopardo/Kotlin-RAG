@@ -47,6 +47,24 @@ object Normalizer {
         return blankLines.replace(text, "\n")
     }
 
+    private val trailingWhitespace = Regex("[ \\t]+(?=\\n)|[ \\t]+$")
+    private val leadingBlankLines = Regex("^(?:[ \\t]*\\n)+")
+
+    /**
+     * Normalization for a source file (SPEC §18.4): NFC (not NFKC, which would change code characters
+     * such as `ﬁ` or full-width forms), `\n` line endings, no zero-width characters or BOM, no trailing
+     * spaces or tabs on any line, no blank lines at the start or whitespace at the end. Indentation,
+     * tabs and blank lines are kept: they carry structure (Python blocks, paragraph breaks).
+     */
+    fun normalizeSource(raw: String): String {
+        var text = JdkNormalizer.normalize(raw, JdkNormalizer.Form.NFC)
+        text = lineEndings.replace(text, "\n")
+        text = zeroWidth.replace(text, "")
+        text = trailingWhitespace.replace(text, "")
+        text = leadingBlankLines.replace(text, "")
+        return text.trimEnd()
+    }
+
     /** Extra normalization applied only before hashing. */
     fun hashNormalize(text: String): String =
         anyWhitespace.replace(text.lowercase(), " ").trim()

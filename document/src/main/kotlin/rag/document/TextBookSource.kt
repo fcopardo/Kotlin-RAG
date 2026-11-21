@@ -6,6 +6,7 @@ import rag.RagException
 import rag.ReadOptions
 import rag.StructuredBook
 import rag.extract.CodeListings
+import rag.extract.DocumentCharset
 import rag.extract.Normalizer
 import java.io.File
 
@@ -120,15 +121,3 @@ object MarkdownText {
     }
 }
 
-/** Reads a text file as UTF-8, falling back to Latin-1 for files that are not valid UTF-8. */
-object DocumentCharset {
-    fun read(file: File): String {
-        val bytes = file.readBytes()
-        val text = try {
-            Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
-        } catch (e: java.nio.charset.CharacterCodingException) {
-            String(bytes, Charsets.ISO_8859_1)
-        }
-        return text.removePrefix("﻿")
-    }
-}
