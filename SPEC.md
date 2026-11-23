@@ -1112,7 +1112,9 @@ Independence lives in the **reader**, not the storage. Each kind is its own modu
 detector, fixtures and eval set, so they are developed, tested and run in parallel.
 
 Storage stays the single schema plus one additive column, `book.kind` (**schema version 6**,
-default `'book'`). Clients read it to label levels — `rag books`, `list_books` and the sample app
+default `'book'`), and, for code, one additive table: `project_file` (**schema version 7**: a project's
+files with their relative path, SHA-256 and character range, written in the book's own transaction and
+deleted with it; a v6 file migrates by creating it). Clients read it to label levels — `rag books`, `list_books` and the sample app
 say "clauses" or "functions" instead of "chapters" — and `--kind` scopes a search, symmetric with
 `--subject` (§8.5).
 
@@ -1159,12 +1161,16 @@ common ranking.
 2. `document` module, **paper**: plain text, Markdown, HTML (reusing the EPUB jsoup walker), `.docx`
    (a zip of XML: `java.util.zip` + jsoup's XML parser, no new dependency).
 3. **contract** in the same module: clause and section numbering.
-4. `code` module: the scanners, directory reading, `PageKind.FILE`, and `rag structure` — a tuning
+4. ✅ `code` module: the scanners, directory reading, `PageKind.FILE`, and `rag structure` — a tuning
    harness that prints the detected levels for a file, a folder and a whole project, with counts,
-   titles and sizes, so the heuristics can be judged and adjusted.
+   titles and sizes, so the heuristics can be judged and adjusted. Projects index with
+   `rag index --project <dir>` (one document per project; `--file` takes a single source file as a
+   project of one), identified by a fingerprint over their files (§18.8). Docs: `docs/CODE.md`.
 5. Folder indexing for documents: `rag index --dir notes/`, one document per file, skipping ones
    already indexed by SHA-256; a folder button in the sample app.
-6. Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector.
+6. Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector. Done for
+   code: `docs/CODE.md`, the README section and the selector (All by default); `docs/DOCUMENTS.md`
+   is still to write.
 7. Optional: searching several database files at once, for people who split by kind but want one
    query. Needs a `(db, bookId)` pair in `Hit`. Not needed to search across kinds — one file does.
 
