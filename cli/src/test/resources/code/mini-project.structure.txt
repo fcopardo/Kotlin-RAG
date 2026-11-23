@@ -1,0 +1,70 @@
+project mini-project (code)
+files: 8 read, 4 skipped (1 build folder, 1 gitignore, 1 hidden, 1 lockfile)
+  app › shop/cart › Cart.kt  [app/src/main/kotlin/shop/cart/Cart.kt]
+    L1  17 chars  3 tok  package shop.cart
+    L3  21 chars  3 tok  import shop.pay.Money
+  app › shop/cart › Cart.kt › Cart  [app/src/main/kotlin/shop/cart/Cart.kt]
+    L5–L7  144 chars  27 tok  /** A shopping cart: lines of products with quantities. */
+  app › shop/cart › Cart.kt › Cart › Line  [app/src/main/kotlin/shop/cart/Cart.kt]
+    L9–L10  111 chars  25 tok  /** One product in the cart. */
+    L11  44 chars  9 tok  fun subtotal(): Money = unitPrice * quantity
+    L12  1 chars  1 tok  }
+  app › shop/cart › Cart.kt › Cart  [app/src/main/kotlin/shop/cart/Cart.kt]
+    L14–L24  476 chars  82 tok  /** Adds [quantity] of [sku]; adding a product again rais...
+    L26  82 chars  17 tok  fun total(): Money = lines.fold(Money.ZERO) { sum, line -...
+    L27  1 chars  1 tok  }
+  app › shop/cart › Discounts.kt  [app/src/main/kotlin/shop/cart/Discounts.kt]
+    L1  17 chars  3 tok  package shop.cart
+    L3  21 chars  3 tok  import shop.pay.Money
+  app › shop/cart › Discounts.kt › Discounts  [app/src/main/kotlin/shop/cart/Discounts.kt]
+    L5–L6  61 chars  13 tok  /** Discount rules applied at checkout. */
+    L7–L9  157 chars  33 tok  /** Ten percent off orders of 100 or more. */
+    L10  1 chars  1 tok  }
+  app › shop/cart › Discounts.kt  [app/src/main/kotlin/shop/cart/Discounts.kt]
+    L12–L13  151 chars  30 tok  /** [percent] percent of [amount], rounded down to the ce...
+  app › shop/pay › Payment.kt  [app/src/main/kotlin/shop/pay/Payment.kt]
+    L1  16 chars  3 tok  package shop.pay
+  app › shop/pay › Payment.kt › Money  [app/src/main/kotlin/shop/pay/Payment.kt]
+    L3–L5  83 chars  20 tok  /** An amount of money in cents. */
+    L6  60 chars  10 tok  operator fun plus(other: Money) = Money(cents + other.cents)
+    L7  61 chars  10 tok  operator fun minus(other: Money) = Money(cents - other.ce...
+    L8  45 chars  10 tok  operator fun times(n: Int) = Money(cents * n)
+  app › shop/pay › Payment.kt › Money › Companion  [app/src/main/kotlin/shop/pay/Payment.kt]
+    L10–L13  54 chars  12 tok  companion object {
+  app › shop/pay › Payment.kt › Gateway  [app/src/main/kotlin/shop/pay/Payment.kt]
+    L15–L18  116 chars  23 tok  /** Something that can take a payment. */
+  app › shop/pay › Payment.kt › CardGateway  [app/src/main/kotlin/shop/pay/Payment.kt]
+    L20–L25  251 chars  57 tok  /** Charges a card through the bank's API; refuses amount...
+    L26–L32  205 chars  29 tok  override fun charge(card: String, amount: Money): Boolean {
+    L33  1 chars  1 tok  }
+  app › shop/pay › Receipts.kt  [app/src/main/kotlin/shop/pay/Receipts.kt]
+    L1  16 chars  3 tok  package shop.pay
+    L3–L4  125 chars  22 tok  /** Formats cents as "12.34". */
+    L6–L11  318 chars  61 tok  /** The receipt's lines: one per item, then the total. */
+  app (test) › shop/cart › CartTest.kt  [app/src/test/kotlin/shop/cart/CartTest.kt]
+    L1  17 chars  3 tok  package shop.cart
+    L3–L5  77 chars  8 tok  import shop.pay.Money
+  app (test) › shop/cart › CartTest.kt › CartTest  [app/src/test/kotlin/shop/cart/CartTest.kt]
+    L7  16 chars  4 tok  class CartTest {
+    L8–L14  221 chars  29 tok  @Test
+    L15  1 chars  1 tok  }
+  native › checksum.c  [native/checksum.c]
+    L1–L2  39 chars  5 tok  #include <stdint.h>
+    L4–L12  281 chars  74 tok  /* Adler-32 over a buffer, for the receipt printer's prot...
+  tools › report.py  [tools/report.py]
+    L1–L2  49 chars  10 tok  """Sales report from the order log."""
+    L5–L8  129 chars  21 tok  def load(path):
+  tools › report.py › Report  [tools/report.py]
+    L11–L12  43 chars  7 tok  class Report:
+    L14–L15  50 chars  8 tok  def __init__(self, rows):
+    L17–L22  157 chars  22 tok  def totals(self):
+  web › cart.ts › CartItem  [web/src/cart.ts]
+    L1–L5  102 chars  22 tok  // The cart badge in the page header.
+  web › cart.ts  [web/src/cart.ts]
+    L7–L9  118 chars  20 tok  export function itemCount(items: CartItem[]): number {
+  web › cart.ts › CartBadge  [web/src/cart.ts]
+    L11  24 chars  5 tok  export class CartBadge {
+    L12  53 chars  7 tok  constructor(private readonly element: HTMLElement) {}
+    L14–L16  91 chars  10 tok  render(items: CartItem[]): void {
+    L17  1 chars  1 tok  }
+totals: 21 files, 46 functions, 122 lines, 0 warnings

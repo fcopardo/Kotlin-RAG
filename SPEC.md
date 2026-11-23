@@ -1206,3 +1206,10 @@ this repository (232 files read; 30 skipped: 18 by `.gitignore`, 9 hidden, 3 bin
 After the fixes: 0 warnings over the repository; `Searcher.kt` reads as its file, `Mode`, `MatchType`,
 `Searcher` (with its KDoc) and the nested `BinaryIndex`, `BitsCache`, `Key` and `Companion`; `search` is one
 function in 2 pieces.
+
+**Code evaluation set** (`integration-tests/src/test/resources/eval/core-code.jsonl`): 20 questions over a frozen
+snapshot of `core` (32 files), 10 keyword (identifiers) and 10 paraphrase (no identifier words), each answered by
+one function's passage in a named section. Lexical, measured 2026-11-23: recall@5 0.85 (keyword 1.00, paraphrase
+0.70), MRR 0.65. Vector and hybrid: not yet measured (needs Ollama; `RAG_OLLAMA=1 ./gradlew :integration-tests:test
+--tests rag.code.CodeEvalTest`). The structure of a committed mini-project (8 files, 2 packages, plus Python,
+TypeScript and C) is pinned by a reviewed `rag structure` golden.
