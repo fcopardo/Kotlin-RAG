@@ -101,10 +101,20 @@ class RagEngine(
         }
     }
 
-    /** [subject] limits the search to books about it (SPEC §8.5). */
-    suspend fun search(query: String, k: Int = 5, bookId: Long? = null, mode: Mode = Mode.HYBRID, subject: String? = null): List<Hit> = locked {
+    /**
+     * [subject] limits the search to books about it (SPEC §8.5); [kind] to documents of that kind: "book",
+     * "paper", "contract" or "code" (SPEC §18.3). Null searches everything.
+     */
+    suspend fun search(
+        query: String,
+        k: Int = 5,
+        bookId: Long? = null,
+        mode: Mode = Mode.HYBRID,
+        subject: String? = null,
+        kind: String? = null,
+    ): List<Hit> = locked {
         val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes).also { searcher = it }
-        s.search(query, k, bookId, mode, subject)
+        s.search(query, k, bookId, mode, subject, kind)
     }
 
     suspend fun books(): List<BookRow> = locked { store.books() }

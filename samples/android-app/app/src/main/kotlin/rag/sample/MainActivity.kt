@@ -7,10 +7,12 @@ import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,10 +30,10 @@ import rag.search.Hit
 import java.io.File
 
 /**
- * A deliberately plain screen: index books, then search them, optionally by subject.
+ * A deliberately plain screen: index books, then search them, optionally by subject and kind.
  *
  * Scriptable for testing (adb shell am start -n rag.sample/.MainActivity --ez indexFolder true
- * --es query "..." --es subject "..."): results are also logged with the tag RagSample.
+ * --es query "..." --es subject "..." --es kind code): results are also logged with the tag RagSample.
  */
 class MainActivity : ComponentActivity() {
 
@@ -40,6 +42,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var resultList: LinearLayout
     private lateinit var query: EditText
     private lateinit var subject: EditText
+    private lateinit var kindFilter: Spinner
 
     private val pickBook = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::importAndIndex) }
 
@@ -58,6 +61,7 @@ class MainActivity : ComponentActivity() {
         i.getStringExtra("query")?.let { q ->
             query.setText(q)
             subject.setText(i.getStringExtra("subject").orEmpty())
+            KINDS.indexOfFirst { it.second == i.getStringExtra("kind") }.takeIf { it > 0 }?.let { kindFilter.setSelection(it) }
             search(openResult = i.getIntExtra("openResult", -1).takeIf { it >= 0 })
         }
     }
@@ -157,15 +161,16 @@ class MainActivity : ComponentActivity() {
     private fun search(openResult: Int? = null) {
         val q = query.text.toString().trim().takeIf { it.isNotEmpty() } ?: return
         val s = subject.text.toString().trim().takeIf { it.isNotEmpty() }
+        val kind = KINDS[kindFilter.selectedItemPosition].second
         lifecycleScope.launch {
             resultList.removeAllViews()
             try {
                 val started = System.nanoTime()
-                val hits = RagLibrary.engine(this@MainActivity).search(q, k = 5, subject = s)
+                val hits = RagLibrary.engine(this@MainActivity).search(q, k = 5, subject = s, kind = kind)
                 val ms = (System.nanoTime() - started) / 1_000_000
                 results.text = "${hits.size} results in $ms ms. Tap one to open the book there."
                 hits.forEach { hit -> resultList.addView(resultView(hit)) }
-                Log.i(TAG, "query '$q' subject '$s': ${results.text}\n" + hits.joinToString("\n") { citation(it) })
+                Log.i(TAG, "query '$q' subject '$s' kind '$kind': ${results.text}\n" + hits.joinToString("\n") { citation(it) })
                 openResult?.let { n -> hits.getOrNull(n)?.let { open(it) } }
             } catch (e: RagException) {
                 results.text = "Search failed: ${e.message}"
@@ -174,7 +179,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun citation(hit: Hit): String {
-        val pages = hit.paragraph.pageStartLabel.let { start ->
+        // A source file's page label is its path, cited as it is (a passage never spans two files).
+        val pages = if (hit.pageKind == "file") hit.paragraph.pageStartLabel else hit.paragraph.pageStartLabel.let { start ->
             if (start == hit.paragraph.pageEndLabel) "p. $start" else "pp. $start–${hit.paragraph.pageEndLabel}"
         }
         return "${hit.bookTitle} › ${hit.chapter.title}, $pages"
@@ -207,13 +213,16 @@ class MainActivity : ComponentActivity() {
         resultList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         query = EditText(this).apply { hint = "Ask something about your books" }
         subject = EditText(this).apply { hint = "Subject filter (optional), e.g. android" }
+        kindFilter = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, KINDS.map { it.first })
+        }
         val pick = Button(this).apply { text = "Add a book (PDF or EPUB)"; setOnClickListener { pickBook.launch(BOOK_TYPES) } }
         val folder = Button(this).apply { text = "Index the books folder"; setOnClickListener { indexFolder() } }
         val go = Button(this).apply { text = "Search"; setOnClickListener { search() } }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 48)
-            listOf(status, pick, folder, query, subject, go, results, resultList).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+            listOf(status, pick, folder, query, subject, kindFilter, go, results, resultList).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
         }
         setContentView(ScrollView(this).apply { addView(column) }.also(BookViewerActivity::padForSystemBars))
     }
@@ -226,5 +235,8 @@ class MainActivity : ComponentActivity() {
          * application/octet-stream, so it's allowed too; [formatOf] then checks the content.
          */
         val BOOK_TYPES = arrayOf("application/pdf", "application/epub+zip", "application/octet-stream")
+
+        /** The kind filter's entries: label, and the kind passed to search (null = everything, the default). */
+        private val KINDS = listOf("All" to null, "Books" to "book", "Papers" to "paper", "Contracts" to "contract", "Code" to "code")
     }
 }

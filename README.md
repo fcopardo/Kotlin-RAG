@@ -17,6 +17,12 @@ and needs about **100 KB** of RAM for vector search.
 
 The full design, decisions and measurements are in [SPEC.md](SPEC.md).
 
+## Documents and code
+
+Besides books, `rag index` reads papers and contracts (Markdown, plain text, HTML, Word) and **source code**:
+`rag index --project <folder>` indexes a project as files › classes › functions › lines, cited by file path, and
+`rag structure` shows what would be stored without storing it. See [docs/CODE.md](docs/CODE.md).
+
 ## Requirements
 
 - **JDK 21 or later** to run. Builds use a JDK 21 toolchain: an installed JDK 21, or one Gradle
