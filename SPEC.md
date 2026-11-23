@@ -1188,3 +1188,21 @@ common ranking.
   and template-heavy C++ will mis-split. `rag structure` exists to make that visible.
 - A mixed-kind result list shows different level names per hit. Clients that hard-code the word
   "chapter" need a small change.
+- A changed project is indexed as a new book; the old one stays until deleted. `project_file` keeps
+  per-file hashes so incremental re-indexing can replace only the changed files later.
+- An oversized section header (a class whose KDoc and constructor exceed the 400-token cap) is split
+  between lines like any long passage, which can cut a parameter's KDoc in two.
+
+### 18.8 `rag structure` review (2026-11-23)
+Run on one file (`core/…/search/Searcher.kt`), one package (`core/…/rag/search`), the `code` module and
+this repository (232 files read; 30 skipped: 18 by `.gitignore`, 9 hidden, 3 binary). Findings and fixes:
+
+| Finding | Cause | Fix |
+| --- | --- | --- |
+| 44 scanner warnings across the repository, all in test files | A Kotlin name in backticks with an apostrophe (`` `the spec's options` ``) started a character literal, which swallowed the function's braces | The lexer skips backtick names (Kotlin, Swift) unmasked; test |
+| `class Searcher` not found, so none of its methods were functions and `search` was split at every blank line | KDoc comments between constructor parameters are blank once masked, and a blank line stopped the header's upward walk | Inside an open parameter list the walk continues over comment lines and lines ending in `}` or `;` (capped at 400 lines); test |
+| The class's KDoc stayed in the file's section | A lambda default value in the constructor is a block inside parentheses; it moved the doc floor past the KDoc | Blocks inside parentheses no longer move the floor; test |
+
+After the fixes: 0 warnings over the repository; `Searcher.kt` reads as its file, `Mode`, `MatchType`,
+`Searcher` (with its KDoc) and the nested `BinaryIndex`, `BitsCache`, `Key` and `Companion`; `search` is one
+function in 2 pieces.

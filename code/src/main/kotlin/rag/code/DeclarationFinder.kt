@@ -108,8 +108,10 @@ object DeclarationFinder {
                         Classified.Transparent -> region(b.open + 1, b.close, b.children, b.open, parent)
                         null -> {}
                     }
+                    // A block inside parentheses (`warn: () -> Unit = { … }` in a constructor) is part of the
+                    // header after it: it must not become the floor for that header's docs.
+                    floor = b.close
                 }
-                floor = b.close
             }
         }
 

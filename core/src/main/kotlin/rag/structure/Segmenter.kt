@@ -157,6 +157,9 @@ class Segmenter(@Suppress("UNUSED_PARAMETER") locale: Locale = Locale.ENGLISH, p
 
     private fun tokens(text: String, span: PhraseSpan): Double = words(text, span.start, span.end).size * 1.3
 
+    /** The token estimate the size cap uses for `text[start..end]` (words × 1.3), rounded: for reports such as `rag structure`. */
+    fun tokenEstimate(text: String, start: Int, end: Int): Int = Math.round(words(text, start, end).size * 1.3).toInt()
+
     /** Runs of non-whitespace in `text[from..to]`, as ranges; whitespace as in the JDK's `\s`. */
     private fun words(text: String, from: Int, to: Int): List<IntRange> {
         val words = mutableListOf<IntRange>()

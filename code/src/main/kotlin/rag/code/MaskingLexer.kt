@@ -27,6 +27,7 @@ class Masked(
  * - An interpolation inside a string (`${…}`, `\(…)`, `{…}`) is masked with the string, but it is
  *   scanned to find where the string really ends: strings nested inside it don't end the outer one.
  * - [Language.OTHER] text is returned unchanged.
+ * - A Kotlin or Swift identifier in backticks is kept as code; quotes inside it start nothing.
  * - Never throws. A literal that cannot span lines (a `"…"` or `'…'` string in every family but
  *   Rust) left open ends at its line break. Any other comment or literal left open is masked to the
  *   end of the text. Either adds one warning naming the line it started on
@@ -95,6 +96,18 @@ private class Scanner(private val text: String, private val language: Language) 
                     depth--
                 } else if (c == opener) {
                     depth++
+                }
+            }
+            // A Kotlin or Swift identifier in backticks (`` `the spec's options` ``) is a name, not a literal:
+            // skip it unmasked, so a quote inside it never starts one. It ends at the next backtick on its line.
+            if (c == '`' && (language == Language.KOTLIN || language == Language.SWIFT)) {
+                var k = i + 1
+                while (k < n && text[k] != '`' && text[k] != '\n') k++
+                if (k < n && text[k] == '`') {
+                    lastSig = '`'
+                    lastSigPos = k
+                    i = k + 1
+                    continue
                 }
             }
             val end = literal(i)

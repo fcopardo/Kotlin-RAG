@@ -298,4 +298,16 @@ class MaskingLexerTest {
         assertEquals(0, MaskingLexer.mask("val s = \"\"\"a\nb\"\"\"", KOTLIN).literalBreaks.size - 1)
         assertEquals(0, MaskingLexer.mask("// x\n/* a\nb */", KOTLIN).literalBreaks.size, "comments are not literals")
     }
+
+    @Test
+    fun `a backtick name with a quote in it is code, not a literal`() {
+        val t = "fun `the spec's options`() {\n    val c = 'x'\n}\n"
+        val m = MaskingLexer.mask(t, KOTLIN)
+        assertEquals(emptyList(), m.warnings)
+        assertEquals("fun `the spec's options`() {\n    val c =    \n}\n", m.text)
+        assertEquals(emptyList(), MaskingLexer.mask("func `default`() { let s = \"it's\" }", SWIFT).warnings)
+        val d = DeclarationFinder.find("class T {\n    fun `doesn't break`() {\n        x()\n    }\n}\n", KOTLIN)
+        assertEquals(listOf("T", "doesn't break"), d.items.map { it.name })
+        assertEquals(emptyList(), d.warnings)
+    }
 }

@@ -132,6 +132,47 @@ internal class IndexCommand : EmbeddingCommand("index") {
     }
 }
 
+/**
+ * `rag structure` (SPEC §18.4, plan step 5, part 5b): shows what `rag index` would store, through the same
+ * `BookReader`, without writing anything. See the task file for the options.
+ */
+internal class StructureCommand : CliktCommand(name = "structure") {
+    override fun help(context: Context) = "Show what `rag index` would store for a file or a code project, without storing it."
+    val file by option("--file", help = "The file to inspect").file(mustExist = true, canBeDir = false)
+    val project by option("--project", help = "A project folder to inspect").file(mustExist = true, canBeDir = true)
+    val tocPages by option("--toc-pages", help = "PDF only: pages with the table of contents, e.g. 5-8")
+        .convert { BookReader.parsePageRanges(it) }
+    val locationSize by option("--location-size", help = "EPUB without a page list: characters per location")
+        .int()
+    val depth by option("--depth", help = "How deep to show (0 = summary only)").int().default(2)
+    val json by option("--json", help = "Print JSON report").flag()
+
+    override fun run() {
+        val isProject = project != null
+        if (isProject) {
+            if (file != null) throw UsageError("specify --file or --project, not both")
+        } else {
+            if (file == null) throw UsageError("specify --file or --project")
+        }
+        val target = project ?: file!!
+        if (isProject) {
+            if (!target.isDirectory) throw UsageError("--project must be a directory")
+            if (tocPages != null) throw UsageError("--toc-pages is not supported with --project")
+            if (locationSize != null) throw UsageError("--location-size is not supported with --project")
+        }
+        if (depth < 0) throw UsageError("--depth must be 0 or more")
+        val locSize = locationSize ?: ReadOptions.DEFAULT_LOCATION_SIZE
+        val book = BookReader().read(target, tocPages, ReadOptions(tocPages = tocPages, locationSize = locSize))
+        val fallbackTitle = target.name
+        val structure = StructureReport.of(book, fallbackTitle)
+        if (json) {
+            echo(StructureReport.json(structure).trimEnd('\n'))
+        } else {
+            echo(StructureReport.text(structure, depth).trimEnd('\n'))
+        }
+    }
+}
+
 private class EmbedCommand : EmbeddingCommand("embed") {
     override fun help(context: Context) = "Embed (or finish embedding) an indexed book's paragraphs."
     val db by option("--db").required()
@@ -393,7 +434,7 @@ internal fun citation(kind: String, start: String, end: String): String = when {
 }
 
 fun main(args: Array<String>) {
-    val command = Rag().subcommands(IndexCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), SubjectsCommand(), BooksCommand(), DumpCommand(), McpCommand(), ServeCommand())
+    val command = Rag().subcommands(IndexCommand(), StructureCommand(), EmbedCommand(), SearchCommand(), EvalCommand(), SummarizeCommand(), SubjectsCommand(), BooksCommand(), DumpCommand(), McpCommand(), ServeCommand())
     val exitCode = try {
         command.parse(args)
         0

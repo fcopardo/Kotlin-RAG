@@ -133,4 +133,19 @@ class KotlinRulesTest {
         assertEquals(sample.indexOf("fun describe"), items.getValue("describe").start)
         assertEquals(endOf("with area \${area()}\""), items.getValue("describe").end)
     }
+
+    @Test
+    fun `review fix - a class whose constructor has documented parameters keeps its methods`() {
+        val src = "class Searcher(\n    private val store: Int,\n    /** Weight. */\n    private val warn: (String) -> Unit = { System.err.println(it) },\n) {\n    fun search(q: String): Int {\n        val a = 1\n\n        return a\n    }\n}\n"
+        val d = DeclarationFinder.find(src, Language.KOTLIN)
+        assertEquals(listOf("CLASS Searcher 0", "FUNCTION search 1"), d.items.map { "${it.kind} ${it.name} ${it.depth}" })
+    }
+
+    @Test
+    fun `review fix - a lambda in the constructor does not cut the class off from its KDoc`() {
+        val src = "/**\n * Doc.\n */\nclass S(\n    private val warn: (String) -> Unit = { println(it) },\n) {\n    fun f() = 1\n}\n"
+        val d = DeclarationFinder.find(src, Language.KOTLIN)
+        assertEquals(listOf("S", "f"), d.items.map { it.name })
+        assertEquals(0, d.items[0].start)
+    }
 }

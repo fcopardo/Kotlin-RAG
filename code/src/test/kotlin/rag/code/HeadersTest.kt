@@ -3,6 +3,7 @@ package rag.code
 import org.junit.jupiter.api.Timeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @Timeout(10)
 class HeadersTest {
@@ -83,5 +84,14 @@ class HeadersTest {
         assertEquals(Header("", alone.lastIndexOf('{')), header(alone, floor = alone.indexOf('{')))
         val after = "class A { fn f(\n) {"
         assertEquals("fn f( )", text(after, floor = after.indexOf('{')))
+    }
+
+    @Test
+    fun `review fix - comments and lambdas inside a long parameter list stay in the header`() {
+        val src = "class Searcher(\n    private val a: Int,\n    /** Doc. */\n    private val warn: (String) -> Unit = { println(it) },\n\n    private val b: Int = 2,\n) {"
+        val masked = MaskingLexer.mask(src, Language.KOTLIN).text
+        val h = Headers.of(masked, Lines(src), src.lastIndexOf('{'), -1)
+        assertEquals(0, h.start)
+        assertTrue(h.text.startsWith("class Searcher( private val a: Int,"), h.text)
     }
 }
