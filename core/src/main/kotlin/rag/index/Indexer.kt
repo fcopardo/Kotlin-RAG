@@ -8,7 +8,8 @@ import rag.store.SqliteStore
 import java.io.File
 import java.security.MessageDigest
 
-data class IndexResult(val bookId: Long, val skipped: Boolean, val embedded: EmbedResult?)
+/** [skippedFiles]: what a code project's reader left out (`"<path>: <reason>"`); empty for documents and skipped runs. */
+data class IndexResult(val bookId: Long, val skipped: Boolean, val embedded: EmbedResult?, val skippedFiles: List<String> = emptyList())
 
 data class EmbedResult(val embedded: Int, val copied: Int, val status: String)
 
@@ -24,7 +25,8 @@ class Indexer(
     private val batchSize: Int = 32,
 ) {
     /**
-     * Indexes [file] (PDF or EPUB) unless the same file is already there (by SHA-256) and [reindex] is false.
+     * Indexes [file] (a book, document, source file or project folder) unless it is already there, by its
+     * fingerprint ([BookReader.fingerprint]: the file's SHA-256, or a project's), and [reindex] is false.
      * With an [embedder], it's checked before anything is committed, then paragraphs are embedded.
      */
     fun index(
@@ -36,7 +38,7 @@ class Indexer(
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
         onBatch: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): IndexResult {
-        val sha = sha256(file)
+        val sha = reader.fingerprint(file)
         val existing = store.findBookBySha(sha)
         if (existing != null && !reindex) return IndexResult(existing, skipped = true, embedded = null)
 
@@ -44,7 +46,7 @@ class Indexer(
         val structured = reader.read(file, options = ReadOptions(tocPages = tocPages, locationSize = locationSize))
         val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing)
         val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch = onBatch) }
-        return IndexResult(bookId, skipped = false, embedded = embedded)
+        return IndexResult(bookId, skipped = false, embedded = embedded, skippedFiles = structured.skippedFiles)
     }
 
     /**

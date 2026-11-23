@@ -68,7 +68,7 @@ private class Rag : CliktCommand(name = "rag") {
 }
 
 /** Options shared by commands that talk to Ollama. */
-private abstract class EmbeddingCommand(name: String) : CliktCommand(name = name) {
+internal abstract class EmbeddingCommand(name: String) : CliktCommand(name = name) {
     val ollamaUrl by option("--ollama-url", help = "Ollama base URL").default(OllamaEmbedder.DEFAULT_URL)
     val embedModel by option("--embed-model", help = "Ollama embedding model").default(EmbeddingModel.DEFAULT.name)
     val embedDim by option("--embed-dim", help = "Dimensions kept after Matryoshka truncation (multiple of 64)")
@@ -82,32 +82,53 @@ private abstract class EmbeddingCommand(name: String) : CliktCommand(name = name
         echo("Embeddings: ${result.embedded} embedded, ${result.copied} reused from identical text, status ${result.status}")
 }
 
-private class IndexCommand : EmbeddingCommand("index") {
-    override fun help(context: Context) = "Parse a book, document or page (PDF, EPUB, Word, HTML, Markdown, text), store its units, and embed its passages."
-    val file by option("--file", "--pdf", help = "The file to index; its format is detected from the content").file(mustExist = true, canBeDir = false).required()
+internal class IndexCommand : EmbeddingCommand("index") {
+    override fun help(context: Context) = "Parse a book, document or page (PDF, EPUB, Word, HTML, Markdown, text) or a code project folder (--project), store its units, and embed its passages."
+    val file by option("--file", "--pdf", help = "The file to index; its format is detected from the content").file(mustExist = true, canBeDir = false)
+    val project by option("--project", help = "A project folder to index as one project").file(mustExist = true, canBeDir = true)
     val db by option("--db", help = "SQLite database file").required()
     val tocPages by option("--toc-pages", help = "PDF only: pages with the table of contents, e.g. 5-8")
         .convert { BookReader.parsePageRanges(it) }
     val locationSize by option("--location-size", help = "EPUB without a page list: characters per location")
-        .int().default(ReadOptions.DEFAULT_LOCATION_SIZE)
+        .int()
     val reindex by option("--reindex", help = "Rebuild the book if it's already indexed").flag()
     val noEmbed by option("--no-embed", help = "Skip embedding (run `rag embed` later)").flag()
 
-    override fun run() = SqliteStore(db).use { store ->
-        val result = Indexer(store).index(file, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locationSize)
-        if (result.skipped) {
-            val book = store.book(result.bookId)!!
-            echo("Already indexed as book ${result.bookId} (embeddings: ${book.embedStatus}). Use --reindex to rebuild.")
-            if (book.embedStatus != "complete") echo("Run `rag embed --db $db --book ${result.bookId}` to finish embedding.")
-            return@use
+    override fun run() {
+        val isProject = project != null
+        if (isProject) {
+            if (file != null) throw UsageError("specify --file or --project, not both")
+        } else {
+            if (file == null) throw UsageError("specify --file or --project")
         }
-        val book = store.book(result.bookId)!!
-        val units = store.units(result.bookId).groupingBy { it.kind }.eachCount()
-        val levels = DocumentKinds.of(book.kind).levels
-        echo("Indexed ${levels.root} ${result.bookId}: ${book.title ?: file.name} (${book.kind}, ${book.format}, pages: ${book.pageKind})")
-        echo("${units[UnitKind.CHAPTER] ?: 0} ${levels.section}s by ${book.chapterStrategy}, " +
-            "${units[UnitKind.PARAGRAPH] ?: 0} ${levels.passage}s, ${units[UnitKind.PHRASE] ?: 0} ${levels.fragment}s")
-        result.embedded?.let(::report)
+        val target = project ?: file!!
+        if (isProject) {
+            if (!target.isDirectory) throw UsageError("--project must be a directory")
+            if (tocPages != null) throw UsageError("--toc-pages is not supported with --project")
+            if (locationSize != null) throw UsageError("--location-size is not supported with --project")
+        }
+        val locSize = locationSize ?: ReadOptions.DEFAULT_LOCATION_SIZE
+        SqliteStore(db).use { store ->
+            val result = Indexer(store).index(target, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locSize)
+            val book = store.book(result.bookId)!!
+            val levels = DocumentKinds.of(book.kind).levels
+            if (result.skipped) {
+                echo("Already indexed as ${levels.root} ${result.bookId} (embeddings: ${book.embedStatus}). Use --reindex to rebuild.")
+                if (book.embedStatus != "complete") echo("Run `rag embed --db $db --book ${result.bookId}` to finish embedding.")
+                return@use
+            }
+            val units = store.units(result.bookId).groupingBy { it.kind }.eachCount()
+            echo("Indexed ${levels.root} ${result.bookId}: ${book.title ?: target.name} (${book.kind}, ${book.format}, pages: ${book.pageKind})")
+            echo("${units[UnitKind.CHAPTER] ?: 0} ${levels.section}s by ${book.chapterStrategy}, " +
+                "${units[UnitKind.PARAGRAPH] ?: 0} ${levels.passage}s, ${units[UnitKind.PHRASE] ?: 0} ${levels.fragment}s")
+            if (isProject) {
+                val skipped = result.skippedFiles
+                val listed = if (skipped.isEmpty()) "" else
+                    " (" + skipped.take(5).joinToString(", ") + (if (skipped.size > 5) ", …" else "") + ")"
+                echo("Files: ${store.projectFiles(result.bookId).size} read, ${skipped.size} skipped$listed")
+            }
+            result.embedded?.let(::report)
+        }
     }
 }
 

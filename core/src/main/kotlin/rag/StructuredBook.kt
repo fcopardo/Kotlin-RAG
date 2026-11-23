@@ -23,6 +23,8 @@ class StructuredBook(
     val kind: String = DocumentKinds.BOOK.name,
     /** A code project's files, in text order, for the `project_file` table (SPEC §18.4); empty for documents. */
     val projectFiles: List<ProjectFile> = emptyList(),
+    /** What a code project's reader left out, as `"<path>: <reason>"`, sorted by path; empty for documents. */
+    val skippedFiles: List<String> = emptyList(),
 ) {
     fun text(chapter: Chapter): String = book.text.substring(chapter.charStart, chapter.charEnd + 1)
 

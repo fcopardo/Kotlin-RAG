@@ -204,7 +204,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.firstOrNull()
             ?: throw IllegalArgumentException("no book with id $id")
 
-    /** Inserts the book with its pages, units and FTS rows, replacing [replacing] if given. One transaction. */
+    /** Inserts the book with its pages, units, FTS rows and project files, replacing [replacing] if given. One transaction. */
     fun insertBook(structured: StructuredBook, fileSha256: String, extractor: String, replacing: Long? = null): Long = transaction {
         replacing?.let(::deleteBookRows)
         val bookId = insert(
@@ -217,6 +217,10 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
         insertUnits(bookId, structured)
         setSubjects(bookId, "metadata", Subjects.fromMetadata(structured.subjects))
+        if (structured.projectFiles.isNotEmpty()) {
+            batch("INSERT INTO project_file(book_id, path, sha256, char_start, char_end) VALUES (?,?,?,?,?)",
+                structured.projectFiles.map { listOf(bookId, it.path, it.sha256, it.charStart, it.charEnd) })
+        }
         bookId
     }
 

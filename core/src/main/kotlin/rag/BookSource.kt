@@ -32,6 +32,12 @@ interface BookSource {
     val extractor: String
 
     fun read(file: File, options: ReadOptions = ReadOptions()): StructuredBook
+
+    /**
+     * What identifies this input for re-index detection (SPEC §18.4), or null for the SHA-256 of the
+     * file's bytes. A code project is a folder, so its source gives a fingerprint over its files.
+     */
+    fun fingerprint(file: File): String? = null
 }
 
 /**
@@ -44,6 +50,15 @@ object BookSources {
 
 object BookFormats {
     private const val EPUB_MIMETYPE = "application/epub+zip"
+
+    /**
+     * Extensions read as source code when a [BookFormat.CODE] source is installed (SPEC §18.4). Kept equal
+     * to the extensions of `rag.code.Language` (a test in `:code` checks it).
+     */
+    val CODE_EXTENSIONS = setOf(
+        "kt", "kts", "java", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "c", "h", "cc", "cpp", "cxx",
+        "hpp", "hh", "hxx", "cs", "go", "rs", "swift", "py", "pyi",
+    )
 
     /** Enough of a document to tell its format; also enough to tell text from binary. */
     private const val HEAD_BYTES = 1024

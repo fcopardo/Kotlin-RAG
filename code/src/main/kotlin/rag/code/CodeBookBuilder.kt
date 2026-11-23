@@ -46,9 +46,9 @@ object CodeBookBuilder {
      * Chapters: [CodeChapters.starts], plan strategy [ChapterStrategy.CODE] with the warnings,
      * [Chapters.compute], then `Segmenter(options.locale ?: Locale.ENGLISH).segment`. The book: title
      * [name], format [BookFormat.CODE], page kind [PageKind.FILE], extractor [EXTRACTOR], kind
-     * `DocumentKinds.CODE.name`, and the project files.
+     * `DocumentKinds.CODE.name`, the project files, and [skipped] (what the reader left out) as given.
      */
-    fun build(name: String, files: List<SourceFile>, options: ReadOptions = ReadOptions()): StructuredBook {
+    fun build(name: String, files: List<SourceFile>, options: ReadOptions = ReadOptions(), skipped: List<String> = emptyList()): StructuredBook {
         val sb = StringBuilder()
         val pageStarts = mutableListOf<Int>()
         val labels = mutableListOf<String>()
@@ -92,7 +92,7 @@ object CodeBookBuilder {
         return StructuredBook(
             book, chapters, plan, segments,
             title = name, format = BookFormat.CODE, pageKind = PageKind.FILE, extractor = EXTRACTOR,
-            kind = DocumentKinds.CODE.name, projectFiles = projectFiles,
+            kind = DocumentKinds.CODE.name, projectFiles = projectFiles, skippedFiles = skipped,
         )
     }
 
