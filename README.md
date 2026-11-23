@@ -21,7 +21,8 @@ The full design, decisions and measurements are in [SPEC.md](SPEC.md).
 
 Besides books, `rag index` reads papers and contracts (Markdown, plain text, HTML, Word) and **source code**:
 `rag index --project <folder>` indexes a project as files › classes › functions › lines, cited by file path, and
-`rag structure` shows what would be stored without storing it. See [docs/CODE.md](docs/CODE.md).
+`rag structure` shows what would be stored without storing it. See [docs/DOCUMENTS.md](docs/DOCUMENTS.md) and
+[docs/CODE.md](docs/CODE.md).
 
 ## Requirements
 
@@ -75,15 +76,19 @@ Example output:
 
 ## Commands
 
-### `rag index`: add a book
+### `rag index`: add a book, a document, a folder of documents or a code project
 
 ```bash
-rag index --file <pdf|epub> --db <file> [options]
+rag index --file <pdf|epub|md|txt|html|docx|source file> --db <file> [options]
+rag index --dir <folder> --db <file> [options]       # one document per file
+rag index --project <folder> --db <file> [options]   # a code project as one document
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--file` | required | The PDF or EPUB to index; the format is detected from the content. `--pdf` still works as an alias. |
+| `--file` | one of these three | The file to index; the format is detected from the content. `--pdf` still works as an alias. |
+| `--dir` | | A folder of documents: each file a reader can read becomes its own document; see [docs/DOCUMENTS.md](docs/DOCUMENTS.md). |
+| `--project` | | A source folder indexed as one code project; see [docs/CODE.md](docs/CODE.md). |
 | `--db` | required | SQLite database file; created if missing. One file can hold many books. |
 | `--toc-pages` | none | PDF only: pages (1-based) that hold the table of contents, e.g. `5-8` or `2-3,5`. Only needed when the PDF has no bookmarks. |
 | `--location-size` | `2000` | EPUB without a page list: characters per location. |

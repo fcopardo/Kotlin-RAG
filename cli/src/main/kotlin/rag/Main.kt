@@ -3,6 +3,7 @@ package rag
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.CliktError
 import com.github.ajalt.clikt.core.Context
+import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.core.parse
 import com.github.ajalt.clikt.core.subcommands
@@ -26,6 +27,7 @@ import rag.embed.OnnxModels
 import rag.summarize.SubjectIndexer
 import rag.summarize.Subjects
 import rag.index.EmbedResult
+import rag.index.FolderOutcome
 import rag.index.Indexer
 import rag.index.UnitKind
 import kotlinx.serialization.json.Json
@@ -86,6 +88,7 @@ internal class IndexCommand : EmbeddingCommand("index") {
     override fun help(context: Context) = "Parse a book, document or page (PDF, EPUB, Word, HTML, Markdown, text) or a code project folder (--project), store its units, and embed its passages."
     val file by option("--file", "--pdf", help = "The file to index; its format is detected from the content").file(mustExist = true, canBeDir = false)
     val project by option("--project", help = "A project folder to index as one project").file(mustExist = true, canBeDir = true)
+    val dir by option("--dir", help = "A folder of documents to index, one per file").file(mustExist = true, canBeDir = true)
     val db by option("--db", help = "SQLite database file").required()
     val tocPages by option("--toc-pages", help = "PDF only: pages with the table of contents, e.g. 5-8")
         .convert { BookReader.parsePageRanges(it) }
@@ -96,38 +99,68 @@ internal class IndexCommand : EmbeddingCommand("index") {
 
     override fun run() {
         val isProject = project != null
-        if (isProject) {
-            if (file != null) throw UsageError("specify --file or --project, not both")
-        } else {
-            if (file == null) throw UsageError("specify --file or --project")
-        }
-        val target = project ?: file!!
+        val isDir = dir != null
+        val count = listOfNotNull(file, project, dir).size
+        if (count != 1) throw UsageError("specify exactly one of --file, --project, --dir")
+        val target = project ?: file ?: dir!!
         if (isProject) {
             if (!target.isDirectory) throw UsageError("--project must be a directory")
             if (tocPages != null) throw UsageError("--toc-pages is not supported with --project")
             if (locationSize != null) throw UsageError("--location-size is not supported with --project")
         }
+        if (isDir) {
+            if (!target.isDirectory) throw UsageError("--dir must be a directory")
+            if (tocPages != null) throw UsageError("--toc-pages is not supported with --dir")
+        }
         val locSize = locationSize ?: ReadOptions.DEFAULT_LOCATION_SIZE
         SqliteStore(db).use { store ->
-            val result = Indexer(store).index(target, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locSize)
-            val book = store.book(result.bookId)!!
-            val levels = DocumentKinds.of(book.kind).levels
-            if (result.skipped) {
-                echo("Already indexed as ${levels.root} ${result.bookId} (embeddings: ${book.embedStatus}). Use --reindex to rebuild.")
-                if (book.embedStatus != "complete") echo("Run `rag embed --db $db --book ${result.bookId}` to finish embedding.")
-                return@use
+            if (isDir) {
+                val indexer = Indexer(store)
+                val results = indexer.indexFolder(target, reindex, if (noEmbed) null else embedder(), embedDim, locSize) { ff ->
+                    when (ff.outcome) {
+                        FolderOutcome.INDEXED -> {
+                            val bookId = ff.bookId!!
+                            val book = store.book(bookId)!!
+                            val levels = DocumentKinds.of(book.kind).levels
+                            echo("Indexed ${levels.root} $bookId: ${ff.path}")
+                        }
+                        FolderOutcome.ALREADY_INDEXED -> {
+                            val bookId = ff.bookId!!
+                            val book = store.book(bookId)!!
+                            val levels = DocumentKinds.of(book.kind).levels
+                            echo("Already indexed: ${ff.path} (${levels.root} $bookId)")
+                        }
+                        FolderOutcome.NOT_A_DOCUMENT -> echo("Skipped: ${ff.path} (${ff.detail})")
+                        FolderOutcome.FAILED -> echo("Failed: ${ff.path} (${ff.detail})")
+                    }
+                }
+                val indexed = results.count { it.outcome == FolderOutcome.INDEXED }
+                val already = results.count { it.outcome == FolderOutcome.ALREADY_INDEXED }
+                val skipped = results.count { it.outcome == FolderOutcome.NOT_A_DOCUMENT }
+                val failed = results.count { it.outcome == FolderOutcome.FAILED }
+                echo("Folder: $indexed indexed, $already already indexed, $skipped skipped, $failed failed")
+                if (failed > 0) throw ProgramResult(3)
+            } else {
+                val result = Indexer(store).index(target, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locSize)
+                val book = store.book(result.bookId)!!
+                val levels = DocumentKinds.of(book.kind).levels
+                if (result.skipped) {
+                    echo("Already indexed as ${levels.root} ${result.bookId} (embeddings: ${book.embedStatus}). Use --reindex to rebuild.")
+                    if (book.embedStatus != "complete") echo("Run `rag embed --db $db --book ${result.bookId}` to finish embedding.")
+                    return@use
+                }
+                val units = store.units(result.bookId).groupingBy { it.kind }.eachCount()
+                echo("Indexed ${levels.root} ${result.bookId}: ${book.title ?: target.name} (${book.kind}, ${book.format}, pages: ${book.pageKind})")
+                echo("${units[UnitKind.CHAPTER] ?: 0} ${levels.section}s by ${book.chapterStrategy}, " +
+                    "${units[UnitKind.PARAGRAPH] ?: 0} ${levels.passage}s, ${units[UnitKind.PHRASE] ?: 0} ${levels.fragment}s")
+                if (isProject) {
+                    val skipped = result.skippedFiles
+                    val listed = if (skipped.isEmpty()) "" else
+                        " (" + skipped.take(5).joinToString(", ") + (if (skipped.size > 5) ", …" else "") + ")"
+                    echo("Files: ${store.projectFiles(result.bookId).size} read, ${skipped.size} skipped$listed")
+                }
+                result.embedded?.let(::report)
             }
-            val units = store.units(result.bookId).groupingBy { it.kind }.eachCount()
-            echo("Indexed ${levels.root} ${result.bookId}: ${book.title ?: target.name} (${book.kind}, ${book.format}, pages: ${book.pageKind})")
-            echo("${units[UnitKind.CHAPTER] ?: 0} ${levels.section}s by ${book.chapterStrategy}, " +
-                "${units[UnitKind.PARAGRAPH] ?: 0} ${levels.passage}s, ${units[UnitKind.PHRASE] ?: 0} ${levels.fragment}s")
-            if (isProject) {
-                val skipped = result.skippedFiles
-                val listed = if (skipped.isEmpty()) "" else
-                    " (" + skipped.take(5).joinToString(", ") + (if (skipped.size > 5) ", …" else "") + ")"
-                echo("Files: ${store.projectFiles(result.bookId).size} read, ${skipped.size} skipped$listed")
-            }
-            result.embedded?.let(::report)
         }
     }
 }

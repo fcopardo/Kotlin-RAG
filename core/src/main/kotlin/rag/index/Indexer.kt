@@ -1,17 +1,26 @@
 package rag.index
 
 import rag.BookReader
+import rag.RagException
 import rag.ReadOptions
 import rag.embed.Embedder
 import rag.embed.Quantizer
 import rag.store.SqliteStore
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Paths
 import java.security.MessageDigest
 
 /** [skippedFiles]: what a code project's reader left out (`"<path>: <reason>"`); empty for documents and skipped runs. */
 data class IndexResult(val bookId: Long, val skipped: Boolean, val embedded: EmbedResult?, val skippedFiles: List<String> = emptyList())
 
 data class EmbedResult(val embedded: Int, val copied: Int, val status: String)
+
+/** What happened to one file of a folder run ([Indexer.indexFolder], SPEC §18.5 step 5). */
+enum class FolderOutcome { INDEXED, ALREADY_INDEXED, NOT_A_DOCUMENT, FAILED }
+
+/** One file of a folder run: its path relative to the folder (`/`-separated), what happened, its book, and why. */
+data class FolderFile(val path: String, val outcome: FolderOutcome, val bookId: Long? = null, val detail: String? = null)
 
 /**
  * Indexes PDFs into a [SqliteStore] and embeds their paragraphs (SPEC §4, §5.6).
@@ -47,6 +56,93 @@ class Indexer(
         val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing)
         val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch = onBatch) }
         return IndexResult(bookId, skipped = false, embedded = embedded, skippedFiles = structured.skippedFiles)
+    }
+
+    /**
+     * Indexes every document in [dir] as its own document (SPEC §18.5 step 5, `rag index --dir`), with the same
+     * options as [index].
+     *
+     * **What it must do.** Go through a folder of notes, papers, contracts and books and index each file that
+     * a reader can read, one document per file; files already indexed (same bytes, anywhere) are left alone
+     * unless [reindex]; say for every file what happened. One bad file never stops the others, but an
+     * unreachable embedding backend stops the run before anything is stored.
+     *
+     * **How.**
+     * 1. When there is an [embedder], check it is available first (it throws when it isn't).
+     * 2. Collect the files under [dir] at any depth, never entering a folder whose name starts with `.` and
+     *    leaving out files whose name starts with `.` and symbolic links (none of these are reported). Order
+     *    them by their path relative to [dir], `/`-separated.
+     * 3. For each file: if `reader.sourceFor` refuses it ([RagException.BookUnreadable]), it is
+     *    [FolderOutcome.NOT_A_DOCUMENT] with the exception's message as detail. Otherwise call [index] for it:
+     *    a skipped result is [FolderOutcome.ALREADY_INDEXED], else [FolderOutcome.INDEXED], both with the book
+     *    id. If [index] throws a [RagException] other than [RagException.EmbeddingBackendUnavailable] or
+     *    [RagException.ModelMismatch], the file is [FolderOutcome.FAILED] with the message as detail; those two
+     *    stop the run (rethrow them).
+     * 4. Call [onFile] with each result as soon as it is known, and return them all in order.
+     */
+    fun indexFolder(
+        dir: File,
+        reindex: Boolean = false,
+        embedder: Embedder? = null,
+        embedDim: Int = DEFAULT_DIM,
+        locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
+        onFile: (FolderFile) -> Unit = {},
+    ): List<FolderFile> {
+        // 1. Check embedder availability before anything is stored
+        embedder?.checkAvailable()
+
+        // 2. Collect files: any depth, skip hidden dirs/files and symlinks, sort by relative path
+        val files = collectFiles(dir)
+
+        // 3. Process each file
+        val results = mutableListOf<FolderFile>()
+        for (file in files) {
+            val relPath = file.relativeTo(dir).path.replace('\\', '/')
+            try {
+                // Check if a reader can handle this file
+                reader.sourceFor(file)
+            } catch (e: RagException.BookUnreadable) {
+                val result = FolderFile(relPath, FolderOutcome.NOT_A_DOCUMENT, detail = e.message)
+                onFile(result)
+                results += result
+                continue
+            }
+
+            try {
+                val indexResult = index(file, reindex = reindex, embedder = embedder, embedDim = embedDim, locationSize = locationSize)
+                val outcome = if (indexResult.skipped) FolderOutcome.ALREADY_INDEXED else FolderOutcome.INDEXED
+                val result = FolderFile(relPath, outcome, bookId = indexResult.bookId)
+                onFile(result)
+                results += result
+            } catch (e: RagException.EmbeddingBackendUnavailable) {
+                throw e
+            } catch (e: RagException.ModelMismatch) {
+                throw e
+            } catch (e: RagException) {
+                val result = FolderFile(relPath, FolderOutcome.FAILED, detail = e.message)
+                onFile(result)
+                results += result
+            }
+        }
+        return results
+    }
+
+    private fun collectFiles(dir: File): List<File> {
+        val result = mutableListOf<File>()
+        collectFilesRecursive(dir, dir, result)
+        result.sortBy { it.relativeTo(dir).path }
+        return result
+    }
+
+    /** Files under [current] (not the folder itself): links are never followed, hidden entries never taken. */
+    private fun collectFilesRecursive(current: File, base: File, result: MutableList<File>) {
+        current.listFiles()?.forEach { file ->
+            when {
+                Files.isSymbolicLink(file.toPath()) || file.name.startsWith(".") -> Unit
+                file.isDirectory -> collectFilesRecursive(file, base, result)
+                file.isFile -> result.add(file)
+            }
+        }
     }
 
     /**

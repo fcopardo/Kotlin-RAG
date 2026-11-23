@@ -1166,11 +1166,13 @@ common ranking.
    titles and sizes, so the heuristics can be judged and adjusted. Projects index with
    `rag index --project <dir>` (one document per project; `--file` takes a single source file as a
    project of one), identified by a fingerprint over their files (§18.8). Docs: `docs/CODE.md`.
-5. Folder indexing for documents: `rag index --dir notes/`, one document per file, skipping ones
-   already indexed by SHA-256; a folder button in the sample app.
-6. Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector. Done for
-   code: `docs/CODE.md`, the README section and the selector (All by default); `docs/DOCUMENTS.md`
-   is still to write.
+5. ✅ Folder indexing for documents: `rag index --dir notes/`, one document per file, skipping ones
+   already indexed by SHA-256 (`Indexer.indexFolder`: hidden entries and links left out, each file reported
+   as indexed, already indexed, not a document or failed; one failure doesn't stop the run, exit code 3).
+   The sample app's folder button already indexes its books folder; documents there wait for the document
+   readers to be packaged for Android.
+6. ✅ Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector (All by
+   default).
 7. Optional: searching several database files at once, for people who split by kind but want one
    query. Needs a `(db, bookId)` pair in `Hit`. Not needed to search across kinds — one file does.
 
