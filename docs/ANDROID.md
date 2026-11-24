@@ -1,6 +1,7 @@
 # Using the library in an Android app
 
-This guide adds book indexing and search to an Android app: PDF and EPUB books, keyword and
+This guide adds book indexing and search to an Android app: PDF and EPUB books, documents (Markdown,
+text, HTML, Word) and source code (a project folder or a single file, see [CODE.md](CODE.md)), keyword and
 meaning-based search, optional subject filters, all on the device. Every step here is what the
 sample app in [`samples/android-app`](../samples/android-app) does; that app was built as a minified
 release and run on a Galaxy S25 (Android 16).
