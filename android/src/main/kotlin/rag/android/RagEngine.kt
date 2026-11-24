@@ -117,6 +117,21 @@ class RagEngine(
         s.search(query, k, bookId, mode, subject, kind)
     }
 
+    /**
+     * The best [kPerKind] hits of each kind of document, side by side ([Searcher.searchByKind]): a search for
+     * "coroutines" shows the book's passages and the code's functions in their own sections.
+     */
+    suspend fun searchByKind(
+        query: String,
+        kPerKind: Int = 3,
+        kinds: List<String>? = null,
+        mode: Mode = Mode.HYBRID,
+        subject: String? = null,
+    ): Map<String, List<Hit>> = locked {
+        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes).also { searcher = it }
+        s.searchByKind(query, kPerKind, kinds, mode, subject)
+    }
+
     suspend fun books(): List<BookRow> = locked { store.books() }
 
     /** What a book is about: its file's subjects, plus any from `rag subjects` on the desktop (SPEC §8.5). */

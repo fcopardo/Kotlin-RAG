@@ -1,6 +1,7 @@
 package rag.search
 
 import kotlinx.serialization.Serializable
+import rag.DocumentKinds
 import rag.RagException
 import rag.embed.Embedder
 import rag.embed.Quantizer
@@ -49,8 +50,10 @@ data class Hit(
     val chapter: ChapterRef,
     val bookId: Long,
     val bookTitle: String?,
-    /** "pdf", "print" or "location": how to read the page labels (SPEC §16.5). */
+    /** "pdf", "print", "location" or "file": how to read the page labels (SPEC §16.5, §18.2). */
     val pageKind: String,
+    /** The kind of the document hit: "book", "paper", "contract" or "code" (SPEC §18.3). */
+    val kind: String,
     val summary: String? = null,
     /** For SUMMARY hits: "section", "group", "chapter" or "book". */
     val summaryLevel: String? = null,
@@ -162,12 +165,83 @@ class Searcher(
         val vector = if (mode == Mode.LEXICAL) null else queryVector(query, books, required = mode == Mode.VECTOR)
         val context = QueryContext(query, FtsQuery.anyTerm(query), vector)
 
+        val bookIds = if (books.size < inScope.size) books.map { it.id } else null
+        return rankHits(query, books, vector, context.terms, bookId, k, n, mode, context, bookIds)
+    }
+
+    /**
+     * The best [kPerKind] hits of each kind of document, searched separately (plan "Phase 9 app update", step 1):
+     * "coroutines" returns the book's passages and the code's functions side by side, and one kind never crowds
+     * another out. Kinds come in the order of `DocumentKinds.ALL` (book, paper, contract, code); a kind with no
+     * hits is left out. [kinds] = the kinds to search (null: every kind in the database).
+     *
+     * **What it must give.** For every kind K, exactly what `search(query, kPerKind, mode = mode, subject = subject,
+     * kind = K)` gives (same hits, same order, same scores), but with the query embedded once for all kinds, not
+     * once per kind.
+     *
+     * **How.** Move the part of [search] that ranks once the query's vector and keyword terms are known into a
+     * private function that takes them (with the books to rank) as arguments; [search] then calls it once, and this
+     * function builds the vector and terms once and calls it per kind with that kind's books. Build the vector from
+     * all the books being searched, so the model check covers every kind.
+     */
+    fun searchByKind(
+        query: String,
+        kPerKind: Int = 3,
+        kinds: List<String>? = null,
+        mode: Mode = Mode.HYBRID,
+        subject: String? = null,
+    ): Map<String, List<Hit>> {
+        require(kPerKind > 0) { "kPerKind must be positive" }
+
+        // 1. Determine all books in scope (all books, narrowed by subject).
+        val allBooks = store.books()
+        val booksInScope = if (subject == null) allBooks
+        else booksAbout(subject, allBooks.map { it.id }.toSet()).let { ids -> allBooks.filter { it.id in ids } }
+        if (booksInScope.isEmpty()) return emptyMap()
+
+        // 2. Build the query vector and keyword terms once over all books in scope.
+        val vector = if (mode == Mode.LEXICAL) null else queryVector(query, booksInScope, required = mode == Mode.VECTOR)
+        val terms = FtsQuery.anyTerm(query)
+        val context = QueryContext(query, terms, vector)
+
+        // 3. Determine which kinds to search, in DocumentKinds.ALL order, narrowed by [kinds].
+        val searchKinds = if (kinds == null) DocumentKinds.ALL
+        else DocumentKinds.ALL.filter { it.name in kinds }
+
+        // 4. Rank for each kind separately.
+        val n = maxOf(4 * kPerKind, 20)
+        val result = LinkedHashMap<String, List<Hit>>()
+        for (dk in searchKinds) {
+            val kindBooks = booksInScope.filter { it.kind == dk.name }
+            if (kindBooks.isEmpty()) continue
+            val hits = rankHits(query, kindBooks, vector, terms, null, kPerKind, n, mode, context, kindBooks.map { it.id })
+            if (hits.isNotEmpty()) result[dk.name] = hits
+        }
+        return result
+    }
+
+    /**
+     * Rank documents from [books] using the query's vector and keyword terms.
+     * This is the shared ranking logic extracted from [search] and used by [searchByKind].
+     */
+    private fun rankHits(
+        query: String,
+        books: List<BookRow>,
+        vector: FloatArray?,
+        terms: String?,
+        bookId: Long?,
+        k: Int,
+        n: Int,
+        mode: Mode,
+        context: QueryContext,
+        bookIds: List<Long>? = null,
+    ): List<Hit> {
         // A one-sentence paragraph and its phrase share a hash: keep one hit per paragraph.
         val exact = exactHits(query, books, context).distinctBy { it.second }
 
-        val lexical = if (mode == Mode.VECTOR || context.terms == null) emptyList()
+        val lexical = if (mode == Mode.VECTOR || terms == null) emptyList()
         // One query over every book in scope, so hits are ranked by relevance, not by book.
-        else store.ftsSearch("para_fts", context.terms, bookId = bookId, limit = n, bookIds = if (books.size < inScope.size) books.map { it.id } else null)
+        else store.ftsSearch("para_fts", terms, bookId = bookId, limit = n, bookIds = bookIds)
         val dense = vector?.let { v -> vectorSearch(v, books, n) }.orEmpty()
 
         val summaries = if (includeSummaries) summaryRanking(context, books, mode, n) else emptyList()
@@ -384,7 +458,7 @@ class Searcher(
         val chapter = store.unit(paragraph.parentId!!)!!
         val book = store.book(paragraph.bookId)!!
         val closest = phrase ?: closestPhrase(paragraph, context)
-        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title, book.pageKind)
+        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title, book.pageKind, book.kind)
     }
 
     /** Best BM25 phrase in the paragraph; else the phrase most similar to the query; else the first. */

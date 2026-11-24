@@ -17,6 +17,7 @@ class EvaluationTest {
         bookId = 1,
         bookTitle = null,
         pageKind = "pdf",
+        kind = "book",
     )
 
     private val question = EvalQuestion("q1", "query", listOf(17, 18), "One", "keyword")
