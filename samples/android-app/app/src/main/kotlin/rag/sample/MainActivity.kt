@@ -30,7 +30,8 @@ import rag.search.Hit
 import java.io.File
 
 /**
- * A deliberately plain screen: index books, then search them, optionally by subject and kind.
+ * A deliberately plain screen: index books, documents and source files, then search them, optionally by
+ * subject and kind.
  *
  * Scriptable for testing (adb shell am start -n rag.sample/.MainActivity --ez indexFolder true
  * --es query "..." --es subject "..." --es kind code): results are also logged with the tag RagSample.
@@ -72,13 +73,16 @@ class MainActivity : ComponentActivity() {
         return "Tier ${tier.name.lowercase()}, $model"
     }
 
-    /** Indexes every PDF or EPUB in the books folder, recognized by content: names may lack an extension. */
+    /**
+     * Indexes every book, document and source file in the books folder. Source files are recognized by
+     * extension, the rest by content: names may lack an extension.
+     */
     private fun indexFolder() {
         lifecycleScope.launch {
             val books = withContext(Dispatchers.IO) {
                 RagLibrary.booksDir(this@MainActivity).listFiles().orEmpty().filter { f -> f.isFile && formatOf(f) != null }
             }
-            if (books.isEmpty()) status.text = "No PDF or EPUB in ${RagLibrary.booksDir(this@MainActivity)}"
+            if (books.isEmpty()) status.text = "No book, document or source file in ${RagLibrary.booksDir(this@MainActivity)}"
             books.forEach { IndexWorker.enqueue(this@MainActivity, it) }
         }
     }
@@ -96,7 +100,8 @@ class MainActivity : ComponentActivity() {
                 val temp = File.createTempFile("import", null, cacheDir)
                 try {
                     contentResolver.openInputStream(uri)?.use { input -> temp.outputStream().use { input.copyTo(it) } }
-                    val format = formatOf(temp) ?: return@withContext null
+                    // A source file keeps its name: its extension says the language (the content can't).
+                    val format = (if (isSourceFile(name)) BookFormat.CODE else formatOf(temp)) ?: return@withContext null
                     val target = uniqueFile(books, withExtension(name, format))
                     temp.copyTo(target)
                     target
@@ -105,7 +110,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (imported == null) {
-                status.text = "$name isn't a PDF or an EPUB."
+                status.text = "$name isn't a book, a document or a source file."
                 return@launch
             }
             Log.i(TAG, "indexing ${imported.name}")
@@ -119,16 +124,23 @@ class MainActivity : ComponentActivity() {
             if (c.moveToFirst()) c.getString(0) else null
         }?.replace(Regex("[/\\\\:*?\"<>|]"), "_")?.takeIf { it.isNotBlank() } ?: "book"
 
-    private fun formatOf(file: File): BookFormat? = try {
+    private fun isSourceFile(name: String) = name.substringAfterLast('.', "").lowercase() in BookFormats.CODE_EXTENSIONS
+
+    /** The file's format: [BookFormat.CODE] for a source file name, else by content; null if unreadable. */
+    private fun formatOf(file: File): BookFormat? = if (isSourceFile(file.name)) BookFormat.CODE else try {
         BookFormats.sniff(file)
     } catch (e: RagException) {
         null
     }
 
-    /** [name] ending in the format's extension: "Compose internals" → "Compose internals.pdf". */
+    /**
+     * [name] ending in an extension of its format: "Compose internals" → "Compose internals.pdf",
+     * "notes" (text) → "notes.txt". A name that already has one keeps it ("notes.md", "page.htm", "Main.kt").
+     */
     private fun withExtension(name: String, format: BookFormat): String {
-        val extension = format.name.lowercase()
-        return if (name.endsWith(".$extension", ignoreCase = true)) name else "$name.$extension"
+        val extensions = EXTENSIONS.getValue(format)
+        if (format == BookFormat.CODE || extensions.any { name.endsWith(".$it", ignoreCase = true) }) return name
+        return "$name.${extensions.first()}"
     }
 
     /** [name] in [dir], or "name (2).pdf", "name (3).pdf"… if another book already has it. */
@@ -216,7 +228,7 @@ class MainActivity : ComponentActivity() {
         kindFilter = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, KINDS.map { it.first })
         }
-        val pick = Button(this).apply { text = "Add a book (PDF or EPUB)"; setOnClickListener { pickBook.launch(BOOK_TYPES) } }
+        val pick = Button(this).apply { text = "Add a book, document or source file"; setOnClickListener { pickBook.launch(BOOK_TYPES) } }
         val folder = Button(this).apply { text = "Index the books folder"; setOnClickListener { indexFolder() } }
         val go = Button(this).apply { text = "Search"; setOnClickListener { search() } }
         val column = LinearLayout(this).apply {
@@ -231,10 +243,21 @@ class MainActivity : ComponentActivity() {
         const val TAG = "RagSample"
 
         /**
-         * What the system file picker may offer. A file without an extension is typed
-         * application/octet-stream, so it's allowed too; [formatOf] then checks the content.
+         * What the system file picker may offer: books, documents (Markdown, text, HTML, Word) and source
+         * files (any text type; JavaScript has its own). A file without an extension, and many source files,
+         * are typed application/octet-stream, so it's allowed too; [formatOf] then checks the file.
          */
-        val BOOK_TYPES = arrayOf("application/pdf", "application/epub+zip", "application/octet-stream")
+        val BOOK_TYPES = arrayOf(
+            "application/pdf", "application/epub+zip", "text/*", "application/javascript",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream",
+        )
+
+        /** Extensions an imported file may end in, per format; the first is added when it has none. */
+        val EXTENSIONS = mapOf(
+            BookFormat.PDF to listOf("pdf"), BookFormat.EPUB to listOf("epub"), BookFormat.DOCX to listOf("docx"),
+            BookFormat.HTML to listOf("html", "htm", "xhtml"), BookFormat.TEXT to listOf("txt", "md", "markdown"),
+            BookFormat.CODE to emptyList(),
+        )
 
         /** The kind filter's entries: label, and the kind passed to search (null = everything, the default). */
         private val KINDS = listOf("All" to null, "Books" to "book", "Papers" to "paper", "Contracts" to "contract", "Code" to "code")

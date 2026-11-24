@@ -32,7 +32,7 @@ class IndexWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             Result.success(workDataOf(KEY_BOOK to result.bookId))
         } catch (e: RagException) {
-            // Not a PDF/EPUB, no text layer, DRM, ...: retrying won't help.
+            // Unsupported file, no text layer, DRM, ...: retrying won't help.
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: e.javaClass.simpleName)))
         }
     }

@@ -1169,8 +1169,8 @@ common ranking.
 5. ✅ Folder indexing for documents: `rag index --dir notes/`, one document per file, skipping ones
    already indexed by SHA-256 (`Indexer.indexFolder`: hidden entries and links left out, each file reported
    as indexed, already indexed, not a document or failed; one failure doesn't stop the run, exit code 3).
-   The sample app's folder button already indexes its books folder; documents there wait for the document
-   readers to be packaged for Android.
+   On Android, `RagEngine` includes the document and code readers; the sample app's picker and folder
+   button take books, documents and single source files (Phase 9 app update, steps 2–4).
 6. ✅ Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector (All by
    default).
 7. Optional: searching several database files at once, for people who split by kind but want one

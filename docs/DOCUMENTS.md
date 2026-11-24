@@ -69,4 +69,5 @@ anything; see [CODE.md](CODE.md#see-what-would-be-stored-rag-structure).
 - PDFs are always books: a paper or contract saved as PDF is read with the book reader.
 - Topic sections (no headings) are only as good as the vocabulary shifts in the text; short documents often
   become one section.
-- The Android sample app indexes PDFs and EPUBs only; the document readers are not packaged there yet.
+- On Android, the library (`RagEngine`) reads every format here, and the sample app takes documents from
+  its picker and books folder. Its viewer opens PDFs and EPUBs; for other documents it shows the passage.
