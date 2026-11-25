@@ -169,7 +169,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Searches, then lists the hits; tapping one opens the book there. `openResult` opens hit N (scripting). */
+    /**
+     * Searches, then lists the hits; tapping one opens the book there. With a kind selected, its best 5.
+     * With All, the best 3 of each kind in its own section ("Books", "Code"…), in a fixed order, so a
+     * book's passages don't crowd out the code; one kind found shows as a plain list. `openResult`
+     * opens hit N of the list as shown, counting across sections (scripting).
+     */
     private fun search(openResult: Int? = null) {
         val q = query.text.toString().trim().takeIf { it.isNotEmpty() } ?: return
         val s = subject.text.toString().trim().takeIf { it.isNotEmpty() }
@@ -177,17 +182,42 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             resultList.removeAllViews()
             try {
+                val engine = RagLibrary.engine(this@MainActivity)
                 val started = System.nanoTime()
-                val hits = RagLibrary.engine(this@MainActivity).search(q, k = 5, subject = s, kind = kind)
+                val sections: Map<String, List<Hit>> =
+                    if (kind != null) mapOf(kind to engine.search(q, k = 5, subject = s, kind = kind))
+                    else engine.searchByKind(q, kPerKind = 3, subject = s)
                 val ms = (System.nanoTime() - started) / 1_000_000
-                results.text = "${hits.size} results in $ms ms. Tap one to open the book there."
-                hits.forEach { hit -> resultList.addView(resultView(hit)) }
-                Log.i(TAG, "query '$q' subject '$s' kind '$kind': ${results.text}\n" + hits.joinToString("\n") { citation(it) })
+                val hits = sections.values.flatten()
+                val headed = kind == null && sections.size > 1
+                results.text = if (hits.isEmpty()) "No results ($ms ms)." else "${hits.size} results in $ms ms. Tap one to open it."
+                val log = StringBuilder("query '$q' subject '$s' kind '$kind': ${results.text}")
+                sections.forEach { (k, kindHits) ->
+                    if (headed) {
+                        resultList.addView(sectionHeader(k))
+                        log.append("\n== ").append(kindLabel(k))
+                    }
+                    kindHits.forEach { hit ->
+                        resultList.addView(resultView(hit))
+                        log.append("\n").append(citation(hit))
+                    }
+                }
+                Log.i(TAG, log.toString())
                 openResult?.let { n -> hits.getOrNull(n)?.let { open(it) } }
             } catch (e: RagException) {
                 results.text = "Search failed: ${e.message}"
             }
         }
+    }
+
+    /** "Books", "Papers"… as in the kind filter; an unknown kind as it is. */
+    private fun kindLabel(kind: String) = KINDS.firstOrNull { it.second == kind }?.first ?: kind
+
+    private fun sectionHeader(kind: String) = TextView(this).apply {
+        text = kindLabel(kind)
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        textSize = 18f
+        setPadding(0, 32, 0, 8)
     }
 
     private fun citation(hit: Hit): String {
