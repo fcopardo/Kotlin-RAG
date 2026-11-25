@@ -133,6 +133,63 @@ class RagEngine(
         s.searchByKind(query, kPerKind, kinds, mode, subject)
     }
 
+    /** [sectionText] of [hit]'s section and paragraph. */
+    suspend fun sectionText(hit: Hit, maxChars: Int = SECTION_MAX_CHARS): SectionText? =
+        sectionText(hit.bookId, hit.chapter.unitKey, hit.paragraph.unitKey, maxChars)
+
+    /**
+     * The stored text of section [sectionKey] of book [bookId], with paragraph [paragraphKey] marked, for
+     * showing a hit in place without the original file. Null if the book, the section or the paragraph isn't
+     * in this index, or the paragraph isn't inside the section.
+     *
+     * 1. Look up both units with [SqliteStore.findByKey] for [bookId]; take the first match of each.
+     * 2. Unit offsets are inclusive (SPEC §6): the section's text is `bookText.substring(section.start, section.end + 1)`.
+     *    The paragraph must lie inside it (`section.start <= paragraph.start` and `paragraph.end <= section.end`), else null.
+     * 3. A section of at most [maxChars] characters is returned whole. A longer one is cut to a window of
+     *    exactly [maxChars] characters inside the section, centered on the paragraph: start at
+     *    `paragraph.start - (maxChars - paragraphLength) / 2`, clamped so the window stays inside the section
+     *    (first to `section.end + 1 - maxChars` at most, then to `section.start` at least). A paragraph longer
+     *    than [maxChars] starts the window at its own start.
+     * 4. [SectionText.highlightStart] is `paragraph.start` and [SectionText.highlightEnd] `paragraph.end + 1`, minus the
+     *    window start, clamped to `[0, text.length]`: `text.substring(highlightStart, highlightEnd)` is [Hit.paragraph]'s
+     *    text. [SectionText.title] is the section unit's title, or "" when it has none.
+     */
+    suspend fun sectionText(bookId: Long, sectionKey: String, paragraphKey: String, maxChars: Int = SECTION_MAX_CHARS): SectionText? =
+        locked {
+            val sectionList = store.findByKey(sectionKey, bookId)
+            if (sectionList.isEmpty()) return@locked null
+            val section = sectionList.first()
+
+            val paragraphList = store.findByKey(paragraphKey, bookId)
+            if (paragraphList.isEmpty()) return@locked null
+            val paragraph = paragraphList.first()
+
+            // Paragraph must lie inside the section [start, end)
+            if (paragraph.start < section.start || paragraph.end > section.end) return@locked null
+
+            // Unit offsets are inclusive: a unit is bookText[start..end].
+            val sectionEnd = section.end + 1
+            val paragraphEnd = paragraph.end + 1
+            val sectionLen = sectionEnd - section.start
+            val paragraphLen = paragraphEnd - paragraph.start
+            val windowStart = when {
+                sectionLen <= maxChars -> section.start
+                paragraphLen >= maxChars -> paragraph.start
+                else -> (paragraph.start - (maxChars - paragraphLen) / 2).coerceAtMost(sectionEnd - maxChars).coerceAtLeast(section.start)
+            }
+            val windowEnd = minOf(sectionEnd, windowStart + maxChars)
+            val text = store.bookText(bookId).substring(windowStart, windowEnd)
+
+            SectionText(
+                title = section.title.orEmpty(),
+                text = text,
+                highlightStart = (paragraph.start - windowStart).coerceIn(0, text.length),
+                highlightEnd = (paragraphEnd - windowStart).coerceIn(0, text.length),
+                cutBefore = windowStart > section.start,
+                cutAfter = windowEnd < sectionEnd,
+            )
+        }
+
     suspend fun books(): List<BookRow> = locked { store.books() }
 
     /** What a book is about: its file's subjects, plus any from `rag subjects` on the desktop (SPEC §8.5). */
@@ -145,7 +202,9 @@ class RagEngine(
 
     private suspend fun <T> locked(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }
 
-    private companion object {
-        const val TAG = "RagEngine"
+    companion object {
+        /** Characters of a section [sectionText] returns at most: enough for any section of a book. */
+        const val SECTION_MAX_CHARS = 100_000
+        private const val TAG = "RagEngine"
     }
 }

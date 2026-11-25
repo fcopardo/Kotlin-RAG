@@ -213,6 +213,25 @@ for (hit in hits) {
   same JSON the desktop CLI prints.
 - **Books embedded with another model** than the phone's are searched by keywords only, with a
   warning in logcat. §9 explains how one database can carry both tiers' vectors.
+- **Several kinds side by side:** `searchByKind(query, kPerKind = 3)` returns the best hits of each kind
+  ("book", "paper", "contract", "code"), in that order, kinds without hits left out. A search for
+  "coroutines" then shows a book's passages and a project's functions in their own sections; the query
+  is embedded once. `search(..., kind = "code")` searches one kind.
+
+### Show a result without the file
+
+`sectionText(hit)` returns the stored text of the hit's section with the paragraph's offsets in it, so an
+app can show any hit (a document, a source file, a book whose file isn't on the phone) with no file at all:
+
+```kotlin
+val section: SectionText? = engine.sectionText(hit)   // null if the hit isn't in this index
+section?.text                                         // the section, or 100,000 characters around the paragraph
+section?.text?.substring(section.highlightStart, section.highlightEnd)  // the paragraph
+section?.cutBefore; section?.cutAfter                 // text left out before / after a window
+```
+
+The sample's `TextViewerActivity` shows it with the paragraph highlighted and scrolled into view, in a
+monospace font for code; PDF and EPUB books on the phone open in their pages instead (below).
 
 ### Open a result in its book
 

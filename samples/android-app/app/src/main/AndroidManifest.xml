@@ -14,5 +14,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".BookViewerActivity" android:exported="false" />
+        <activity android:name=".TextViewerActivity" android:exported="false" />
     </application>
 </manifest>

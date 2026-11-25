@@ -239,14 +239,20 @@ class MainActivity : ComponentActivity() {
         setOnClickListener { lifecycleScope.launch { open(hit) } }
     }
 
+    /**
+     * Opens [hit]: a PDF or EPUB on this device in the book viewer, at its page; anything else (documents,
+     * source files, a book whose file isn't here) in its section's stored text.
+     */
     private suspend fun open(hit: Hit) {
         val file = RagLibrary.fileFor(this, hit.bookId)
-        if (file == null) {
-            results.text = "${hit.bookTitle} isn't in ${RagLibrary.booksDir(this)} on this device, so it can't be opened."
-            return
+        val format = file?.let { withContext(Dispatchers.IO) { formatOf(it) } }
+        if (file != null && (format == BookFormat.PDF || format == BookFormat.EPUB)) {
+            Log.i(TAG, "opening ${file.name}, ${file.path}, ${file.extension} at ${citation(hit)}")
+            BookViewerActivity.open(this, file, hit, citation(hit))
+        } else {
+            Log.i(TAG, "opening the stored text at ${citation(hit)}")
+            TextViewerActivity.open(this, hit, citation(hit))
         }
-        Log.i(TAG, "opening ${file.name}, ${file.path}, ${file.extension} at ${citation(hit)}")
-        BookViewerActivity.open(this, file, hit, citation(hit))
     }
 
     private fun buildViews() {

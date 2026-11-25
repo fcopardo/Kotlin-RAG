@@ -62,7 +62,7 @@ class BookViewerActivity : ComponentActivity() {
         when (format) {
             BookFormat.PDF -> showPdf(intent.getIntExtra(EXTRA_PAGE, 1))
             BookFormat.EPUB -> showEpub()
-            // Documents and code (SPEC §18) are indexed and searched, but this viewer only renders books.
+            // Documents and code open in TextViewerActivity; this is only reached if the file changed format.
             else -> setContentView(TextView(this).apply {
                 setPadding(48, 48, 48, 48)
                 text = "The sample viewer opens PDF and EPUB books only; ${file.name} is ${format.name.lowercase()}.\n\n$paragraph"
