@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Documents: papers and contracts</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    span.underline{text-decoration: underline;}
+    div.column{display: inline-block; vertical-align: top; width: 50%;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    ul.task-list{list-style: none;}
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+</head>
+<body>
+<h1 id="documents-papers-and-contracts">Documents: papers and contracts</h1>
+<p>Besides PDF and EPUB books, <code>rag index</code> reads plain documents: Markdown and plain text, standalone HTML pages, and Word <code>.docx</code> files. Each is stored as one document, next to books in the same database, and searched with the same command (SPEC.md §18).</p>
+<h2 id="index-documents">Index documents</h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true"></a><span class="ex">rag</span> index --file notes/design.md --db docs.db         # one document</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true"></a><span class="ex">rag</span> index --dir notes/ --db docs.db                   # every document in a folder, one per file</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true"></a><span class="ex">rag</span> search --db docs.db --query <span class="st">&quot;renewal terms&quot;</span> --kind contract</span></code></pre></div>
+<ul>
+<li><p>The format is detected from the content, so names don’t need an extension (a <code>.kt</code> or <code>.py</code> file is read as code, see <a href="CODE.md">CODE.md</a>).</p></li>
+<li><p><code>--dir</code> goes through the folder at any depth in path order, skipping hidden files and folders and symbolic links. Each file is reported as it is handled, then a summary:</p>
+<pre class="text"><code>Skipped: logo.png (Unsupported file (not a PDF, EPUB, Word, HTML or text file): …)
+Indexed paper 1: design.md
+Already indexed: copy-of-design.md (paper 1)
+Failed: draft.txt (Empty document: …)
+Folder: 1 indexed, 1 already indexed, 1 skipped, 1 failed</code></pre>
+<p>A file is identified by the SHA-256 of its bytes, so running it again indexes only new or changed files, and two identical files are one document. One unreadable file doesn’t stop the others; the command then exits with code 3. If the embedding backend can’t be reached, nothing is stored and it exits with code 5.</p></li>
+<li><p><code>--location-size</code> (characters per location, default 2000) applies to documents as to EPUBs without a page list: documents have no pages, so hits are cited by location (<code>loc 3</code>).</p></li>
+</ul>
+<h2 id="papers-and-contracts">Papers and contracts</h2>
+<p>A document becomes one of two kinds, and each kind names its levels:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th>Document</th>
+<th>Section</th>
+<th>Passage</th>
+<th>Fragment</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>paper</td>
+<td>paper</td>
+<td>section</td>
+<td>paragraph</td>
+<td>sentence</td>
+</tr>
+<tr class="even">
+<td>contract</td>
+<td>contract</td>
+<td>clause</td>
+<td>paragraph</td>
+<td>sentence</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Contract</strong> when it has clause numbering that nests (<code>4.</code>, <code>4.2</code>, <code>(a)</code>, <code>ARTICLE IV</code>, <code>§ 7</code>, <code>WHEREAS</code>) <strong>and</strong> reads like an agreement. Numbering alone isn’t enough: a paper numbers its sections the same way, and stays a paper. Sections are titled with their path: `4. Term › 4.2 Renewal`.</li>
+<li><strong>Paper</strong> divided by its own headings when it has at least two: Markdown <code>#</code> and underlined (Setext) headings, HTML <code>&lt;h1&gt;</code>–<code>&lt;h6&gt;</code>, Word <code>Heading N</code> and <code>Title</code> styles. Nested headings join into a path title, <code>Introduction › Background</code>.</li>
+<li><strong>Paper</strong> divided by topic when it has no headings: TextTiling compares the vocabulary of neighbouring paragraphs and cuts where it changes most. It is purely lexical, so a document gets the same structure on every device whatever embedding model is used. Each section is titled by the opening words of its first paragraph.</li>
+</ul>
+<p>What each format contributes:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Format</th>
+<th>Read as</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Markdown, plain text</td>
+<td>headings and fenced code blocks; inline marks such as <code>**bold**</code> stay as written</td>
+</tr>
+<tr class="even">
+<td>HTML</td>
+<td>the page body, through the same walker as EPUB: blocks, code and tables as in a book</td>
+</tr>
+<tr class="odd">
+<td>Word <code>.docx</code></td>
+<td>paragraphs, heading styles, and tables (one line per row), read straight from the zip</td>
+</tr>
+</tbody>
+</table>
+<h2 id="see-what-would-be-stored">See what would be stored</h2>
+<p><code>rag structure --file &lt;document&gt;</code> prints the sections and passages a document would get, without storing anything; see <a href="CODE.md#see-what-would-be-stored-rag-structure">CODE.md</a>.</p>
+<h2 id="known-limits">Known limits</h2>
+<ul>
+<li>PDFs are always books: a paper or contract saved as PDF is read with the book reader.</li>
+<li>Topic sections (no headings) are only as good as the vocabulary shifts in the text; short documents often become one section.</li>
+<li>On Android, the library (<code>RagEngine</code>) reads every format here, and the sample app takes documents from its picker and books folder. Its viewer opens PDFs and EPUBs; for other documents it shows the passage.</li>
+</ul>
+</body>
+</html>

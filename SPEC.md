@@ -1156,11 +1156,13 @@ common ranking.
   skips (build output, `node_modules`, binaries, minified files).
 
 ### 18.5 Steps (each ends with passing tests)
-1. Plumbing: `DocumentKind`, `LevelNames`, `book.kind` (v6), level names in `rag books` /
-   `list_books` / `BookInfo`, `--kind` filter. Books behave identically.
-2. `document` module, **paper**: plain text, Markdown, HTML (reusing the EPUB jsoup walker), `.docx`
+1. ✅ Plumbing: `DocumentKind`, `LevelNames`, `book.kind` (v6), level names in `rag books` /
+   `list_books` / `BookInfo`, `--kind` filter. Books behave identically (`DocumentKindTest`; a version 5
+   database migrates and answers the same, `MigrationTest`).
+2. ✅ `document` module, **paper**: plain text, Markdown, HTML (reusing the EPUB jsoup walker), `.docx`
    (a zip of XML: `java.util.zip` + jsoup's XML parser, no new dependency).
-3. **contract** in the same module: clause and section numbering.
+3. ✅ **contract** in the same module: clause and section numbering. Evaluation sets and structure goldens
+   for both kinds: §18.9.
 4. ✅ `code` module: the scanners, directory reading, `PageKind.FILE`, and `rag structure` — a tuning
    harness that prints the detected levels for a file, a folder and a whole project, with counts,
    titles and sizes, so the heuristics can be judged and adjusted. Projects index with
@@ -1221,3 +1223,26 @@ one function's passage in a named section. Lexical, measured 2026-11-23: recall@
 0.70), MRR 0.65. Vector and hybrid: not yet measured (needs Ollama; `RAG_OLLAMA=1 ./gradlew :integration-tests:test
 --tests rag.code.CodeEvalTest`). The structure of a committed mini-project (8 files, 2 packages, plus Python,
 TypeScript and C) is pinned by a reviewed `rag structure` golden.
+
+### 18.9 Paper and contract evaluation (2026-11-27)
+Fixtures in `integration-tests/src/test/resources/documents`, each folder indexed into its own database with
+`rag index --dir` (`DocumentEvalTest`):
+
+- **Papers:** a frozen snapshot of this repository's guides in three formats: `ANDROID.md` as Markdown,
+  `DOCUMENTS.md` as HTML and `CODE.md` as Word (both made with pandoc; the Markdown sources are kept in `sources/`).
+- **Contracts:** two agreements written for these tests, with fictional parties: a master services agreement
+  (plain text: `ARTICLE` headings, decimal clauses, lettered items, recitals) and a mutual NDA (Word).
+
+Each kind has a 20-question set (`eval/papers.jsonl`, `eval/contracts.jsonl`; 10 keyword, 10 paraphrase), each
+answered by exactly one passage of a named section, and a reviewed golden of every document's section titles
+(`documents/structure.golden.txt`). Lexical, measured 2026-11-27, also by `rag eval --mode lexical`:
+
+| Kind | recall@5 | keyword | paraphrase | MRR | section@5 |
+| --- | --- | --- | --- | --- | --- |
+| paper | 0.70 | 1.00 | 0.40 | 0.61 | 0.75 |
+| contract | 0.65 | 1.00 | 0.30 | 0.62 | 0.65 |
+
+Vector and hybrid: not yet measured (Ollama is not installed on the test machine; `RAG_OLLAMA=1`).
+
+Review finding: a definition clause (`1.1 Affiliate. "Affiliate" means…`) kept the definition in its title,
+because the name's end was only recognized before a capital letter. A quote before the capital now counts too.

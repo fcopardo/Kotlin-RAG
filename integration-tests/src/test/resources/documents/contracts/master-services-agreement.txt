@@ -1,0 +1,151 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement (the "Agreement") is entered into as of March 3, 2025 (the "Effective Date") by and between Quillon Data Systems Ltd., a company incorporated in Ontario with offices at 410 Mercer Street, Kingston ("Provider"), and Larkspur Logistics Cooperative, a cooperative organized in Manitoba with offices at 22 Prairie Road, Brandon ("Customer"). Provider and Customer are each a "Party" and together the "Parties".
+
+WHEREAS Provider operates a hosted route-planning and fleet telemetry platform and offers related implementation and support services;
+
+WHEREAS Customer wishes to use the platform to plan delivery routes for its member carriers and to receive the related services; and
+
+NOW, THEREFORE, in consideration of the mutual covenants set out herein, the Parties agree as follows.
+
+ARTICLE 1 DEFINITIONS
+
+1.1 Affiliate. "Affiliate" means any entity that directly or indirectly controls, is controlled by, or is under common control with a Party, where control means ownership of more than fifty percent of the voting interests of the entity.
+
+1.2 Customer Data. "Customer Data" means all data, including shipment records, driver schedules and vehicle positions, that Customer or its Authorized Users submit to the Platform, and all reports derived from that data.
+
+1.3 Authorized User. "Authorized User" means an employee, member carrier or contractor of Customer whom Customer permits to access the Platform under Customer's account, up to the number of seats stated in the applicable Order Form.
+
+1.4 Order Form. "Order Form" means an ordering document signed by both Parties that references this Agreement and states the subscription term, the seats, the fees and any Professional Services.
+
+1.5 Platform. "Platform" means Provider's hosted software known as RouteLattice, including its web application, mobile driver application and application programming interfaces, as updated from time to time.
+
+1.6 Professional Services. "Professional Services" means implementation, data migration, training and other consulting services described in a Statement of Work.
+
+ARTICLE 2 SERVICES
+
+2.1 Access to the Platform. Subject to the terms of this Agreement and timely payment of the fees, Provider hereby grants Customer a non-exclusive, non-transferable right during the subscription term to access and use the Platform for Customer's internal business purposes.
+
+2.2 Professional Services. Provider shall perform the Professional Services described in each Statement of Work signed by both Parties. Each Statement of Work shall state the deliverables, the acceptance criteria, the schedule and the fees for that work.
+
+2.3 Restrictions. Customer shall not, and shall not permit any Authorized User to:
+(a) resell, sublicense or provide the Platform to any third party other than its member carriers;
+(b) reverse engineer, decompile or attempt to derive the source code of the Platform, except to the extent applicable law expressly permits it;
+(c) use the Platform to build a competing route-planning product; or
+(d) exceed the rate limits for the application programming interfaces set out in the documentation.
+
+2.4 Changes to the Platform. Provider may update the Platform from time to time, provided that no update materially reduces the functionality described in the documentation during the current subscription term.
+
+ARTICLE 3 FEES AND PAYMENT
+
+3.1 Fees. Customer shall pay the subscription fees and Professional Services fees stated in each Order Form. Subscription fees are invoiced annually in advance; Professional Services fees are invoiced monthly in arrears for work performed.
+
+3.2 Payment Terms. Invoices are due within thirty (30) days of the invoice date. Amounts not paid when due bear interest at one percent (1%) per month, or the highest rate permitted by law if lower, from the due date until paid.
+
+3.3 Disputed Invoices. If Customer disputes an invoice in good faith, it shall notify Provider in writing before the due date and describe the dispute in reasonable detail. The Parties shall work together to resolve the dispute within fifteen (15) days, and Customer shall pay the undisputed portion when due.
+
+3.4 Taxes. Fees exclude sales, use, goods and services and similar taxes. Customer shall pay all such taxes, other than taxes based on Provider's net income, or provide a valid exemption certificate.
+
+3.5 Price Changes. Provider may increase the subscription fees for any renewal term by giving Customer written notice at least sixty (60) days before the renewal, provided that no increase exceeds five percent (5%) over the fees for the expiring term.
+
+ARTICLE 4 TERM AND TERMINATION
+
+4.1 Term. This Agreement begins on the Effective Date and continues until every Order Form has expired or been terminated.
+
+4.2 Renewal. Unless an Order Form states otherwise, each subscription term renews automatically for successive one-year periods unless either Party gives written notice of non-renewal at least forty-five (45) days before the end of the current term.
+
+4.3 Termination for Cause. Either Party may terminate this Agreement or any Order Form by written notice if the other Party:
+(a) materially breaches this Agreement and does not cure the breach within thirty (30) days after receiving notice describing it; or
+(b) becomes insolvent, makes an assignment for the benefit of creditors, or becomes the subject of bankruptcy or receivership proceedings that are not dismissed within sixty (60) days.
+
+4.4 Effect of Termination. Upon termination or expiration, Customer's right to access the Platform ends, and each Party shall return or destroy the other Party's Confidential Information. Termination does not relieve Customer of the obligation to pay fees accrued before the termination date.
+
+4.5 Data Export. For thirty (30) days after termination or expiration, Provider shall make Customer Data available for export in comma-separated values and JSON formats at no additional charge. After that period Provider shall delete Customer Data from its production systems, and from its backups within ninety (90) days.
+
+ARTICLE 5 CUSTOMER DATA AND SECURITY
+
+5.1 Ownership. As between the Parties, Customer owns all Customer Data. Customer hereby grants Provider a limited licence to host, copy and process Customer Data solely to provide the Platform and the services under this Agreement.
+
+5.2 Security Measures. Provider shall maintain administrative, physical and technical safeguards designed to protect Customer Data, including encryption of data in transit and at rest, role-based access controls and annual penetration testing by an independent firm.
+
+5.3 Security Incidents. Provider shall notify Customer without undue delay, and in any event within seventy-two (72) hours, after becoming aware of any unauthorized access to Customer Data. The notice shall describe the nature of the incident, the data affected and the measures taken to contain it.
+
+5.4 Data Location. Provider shall store Customer Data only in data centres located in Canada, and shall not transfer Customer Data outside Canada without Customer's prior written consent.
+
+5.5 Subprocessors. Provider may engage subprocessors to host or support the Platform, provided that it maintains a current list of subprocessors on its website, gives Customer thirty (30) days' notice before adding a new subprocessor, and remains responsible for their performance.
+
+ARTICLE 6 SERVICE LEVELS
+
+6.1 Availability. Provider shall make the Platform available at least 99.9% of the time in each calendar month, excluding scheduled maintenance announced at least five (5) days in advance and outages caused by events described in Article 11.
+
+6.2 Service Credits. If availability falls below the commitment in Section 6.1 in any month, Customer shall be entitled to a credit against the next invoice equal to five percent (5%) of the monthly subscription fees for each full tenth of a percentage point below the commitment, up to fifty percent (50%) of those fees. Service credits are Customer's sole remedy for unavailability, except as provided in Section 6.3.
+
+6.3 Chronic Failure. If availability falls below 99.0% in any three months within a period of six consecutive months, Customer may terminate the affected Order Form on written notice and receive a refund of prepaid fees for the remainder of its term.
+
+6.4 Support. Provider shall provide technical support by email and telephone between 7:00 and 19:00 Central Time on business days, and shall respond to critical incidents that prevent route planning within one (1) hour, at any time.
+
+ARTICLE 7 CONFIDENTIALITY
+
+7.1 Confidential Information. "Confidential Information" means any non-public information disclosed by one Party to the other that is marked confidential or that a reasonable person would understand to be confidential, including pricing, product plans and Customer Data.
+
+7.2 Obligations. The receiving Party shall use the disclosing Party's Confidential Information only to perform its obligations or exercise its rights under this Agreement, and shall protect it with at least the care it uses for its own information of a similar nature, and no less than reasonable care.
+
+7.3 Exceptions. The obligations in Section 7.2 do not apply to information that the receiving Party can show:
+(a) is or becomes publicly available through no fault of the receiving Party;
+(b) was known to it without restriction before disclosure;
+(c) is independently developed without use of the Confidential Information; or
+(d) is rightfully received from a third party without a duty of confidentiality.
+
+7.4 Compelled Disclosure. The receiving Party may disclose Confidential Information if required by law or court order, provided that it gives the disclosing Party prompt notice, where legally permitted, so that the disclosing Party may seek a protective order.
+
+ARTICLE 8 WARRANTIES
+
+8.1 Mutual Warranties. Each Party represents and warrants that it has the power and authority to enter into this Agreement and that its performance will comply with applicable law.
+
+8.2 Platform Warranty. Provider warrants that the Platform will perform materially in accordance with its documentation. If it does not, Provider shall, at its option, correct the non-conformity or terminate the affected Order Form and refund the prepaid fees for the remainder of the term.
+
+8.3 Professional Services Warranty. Provider warrants that it will perform the Professional Services in a professional and workmanlike manner. Customer must report any breach of this warranty within sixty (60) days after the services are performed, and Provider shall re-perform the non-conforming services at no charge.
+
+8.4 Disclaimer. Except as expressly provided in this Agreement, neither Party makes any warranty, whether express or implied, including any implied warranty of merchantability, fitness for a particular purpose or non-infringement. Provider does not warrant that routes produced by the Platform are optimal or that the Platform will be error-free.
+
+ARTICLE 9 INDEMNIFICATION
+
+9.1 By Provider. Provider shall defend Customer against any claim by a third party alleging that the Platform infringes that third party's patent, copyright or trademark, and shall pay any damages finally awarded or agreed in settlement. If such a claim is made, Provider may modify the Platform to make it non-infringing, obtain a licence for Customer's continued use, or terminate the affected Order Form and refund the prepaid fees.
+
+9.2 By Customer. Customer shall defend Provider against any claim by a third party arising from Customer Data or from Customer's use of the Platform in breach of Section 2.3, and shall pay any damages finally awarded or agreed in settlement.
+
+9.3 Procedure. The indemnified Party shall give prompt written notice of the claim, allow the indemnifying Party sole control of the defence and settlement, and provide reasonable cooperation at the indemnifying Party's expense. No settlement that imposes an obligation on the indemnified Party may be made without its consent.
+
+ARTICLE 10 LIMITATION OF LIABILITY
+
+10.1 Exclusion of Indirect Damages. Neither Party shall be liable for any indirect, incidental, special or consequential damages, or for lost profits, revenue or goodwill, even if advised of their possibility.
+
+10.2 Liability Cap. Each Party's total liability arising out of this Agreement shall not exceed the fees paid or payable by Customer in the twelve (12) months before the event giving rise to the liability.
+
+10.3 Exceptions. The exclusion in Section 10.1 and the cap in Section 10.2 do not apply to a Party's indemnification obligations under Article 9, to a breach of Article 7, or to liability for gross negligence or wilful misconduct.
+
+ARTICLE 11 GENERAL
+
+11.1 Force Majeure. Neither Party is liable for a delay or failure to perform caused by events beyond its reasonable control, such as natural disasters, war, labour disputes not involving its own employees, or failures of public utilities, provided that it notifies the other Party promptly and resumes performance as soon as practicable. This section does not excuse payment obligations.
+
+11.2 Assignment. Neither Party may assign this Agreement without the other Party's prior written consent, except to an Affiliate or to a successor in a merger or a sale of substantially all of its assets, on written notice to the other Party.
+
+11.3 Notices. Notices under this Agreement must be in writing and delivered by hand, by courier, or by email with confirmation of receipt, to the addresses stated in the Order Form. A notice is effective when received.
+
+11.4 Governing Law. This Agreement is governed by the laws of the Province of Manitoba and the federal laws of Canada applicable there. The courts located in Winnipeg have exclusive jurisdiction over any dispute arising out of this Agreement.
+
+11.5 Dispute Resolution. Before starting court proceedings, a Party shall give written notice of the dispute, and senior executives of both Parties shall meet within twenty (20) days to attempt to resolve it in good faith. Either Party may seek urgent injunctive relief at any time.
+
+11.6 Entire Agreement. This Agreement, together with all Order Forms and Statements of Work, is the entire agreement between the Parties on its subject matter and supersedes all prior proposals and understandings. If an Order Form conflicts with this Agreement, the Order Form prevails for that order only.
+
+11.7 Amendment and Waiver. No amendment of this Agreement is effective unless it is in writing and signed by both Parties. A failure to enforce any provision is not a waiver of the right to enforce it later.
+
+11.8 Severability. If any provision of this Agreement is held unenforceable, it shall be enforced to the maximum extent permissible and the remaining provisions shall continue in full force.
+
+IN WITNESS WHEREOF, the Parties have executed this Agreement by their authorized representatives as of the Effective Date.
+
+Quillon Data Systems Ltd.
+By: Mara Ellison, Chief Executive Officer
+
+Larkspur Logistics Cooperative
+By: Tomas Reyes, General Manager

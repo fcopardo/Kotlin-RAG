@@ -1,0 +1,132 @@
+== papers/android-guide.md: paper
+Using the library in an Android app
+Using the library in an Android app › 1. Requirements
+Using the library in an Android app › 2. Get the library
+Using the library in an Android app › 3. Gradle setup
+Using the library in an Android app › 4. Model files
+Using the library in an Android app › 5. One engine per process
+Using the library in an Android app › 6. Index books in the background
+Using the library in an Android app › 7. Search
+Using the library in an Android app › 7. Search › Show a result without the file
+Using the library in an Android app › 7. Search › Open a result in its book
+Using the library in an Android app › 8. Subjects
+Using the library in an Android app › 9. Ship a database built on the desktop
+Using the library in an Android app › 10. Troubleshooting
+Using the library in an Android app › 11. The sample app
+== papers/code-guide.docx: paper
+Code projects
+Code projects › Index a project
+Code projects › The four levels
+Code projects › See what would be stored: rag structure
+Code projects › What is skipped
+Code projects › Known limits
+== papers/documents-guide.html: paper
+Documents: papers and contracts
+Documents: papers and contracts › Index documents
+Documents: papers and contracts › Papers and contracts
+Documents: papers and contracts › See what would be stored
+Documents: papers and contracts › Known limits
+== contracts/master-services-agreement.txt: contract
+Recital WHEREAS Provider operates a hosted route-planning and fleet
+Recital WHEREAS Customer wishes to use the platform to plan delivery
+Recital NOW, THEREFORE, in consideration of the mutual covenants set
+ARTICLE 1 DEFINITIONS
+ARTICLE 1 DEFINITIONS › 1.1 Affiliate
+ARTICLE 1 DEFINITIONS › 1.2 Customer Data
+ARTICLE 1 DEFINITIONS › 1.3 Authorized User
+ARTICLE 1 DEFINITIONS › 1.4 Order Form
+ARTICLE 1 DEFINITIONS › 1.5 Platform
+ARTICLE 1 DEFINITIONS › 1.6 Professional Services
+ARTICLE 2 SERVICES
+ARTICLE 2 SERVICES › 2.1 Access to the Platform
+ARTICLE 2 SERVICES › 2.2 Professional Services
+ARTICLE 2 SERVICES › 2.3 Restrictions
+ARTICLE 2 SERVICES › 2.3 Restrictions › (a) resell, sublicense or provide the Platform to any third party other…
+ARTICLE 2 SERVICES › 2.3 Restrictions › (b) reverse engineer, decompile or attempt to derive the source code of…
+ARTICLE 2 SERVICES › 2.3 Restrictions › (c) use the Platform to build a competing route-planning product; or
+ARTICLE 2 SERVICES › 2.3 Restrictions › (d) exceed the rate limits for the application programming interfaces set…
+ARTICLE 2 SERVICES › 2.4 Changes to the Platform
+ARTICLE 3 FEES AND PAYMENT
+ARTICLE 3 FEES AND PAYMENT › 3.1 Fees
+ARTICLE 3 FEES AND PAYMENT › 3.2 Payment Terms
+ARTICLE 3 FEES AND PAYMENT › 3.3 Disputed Invoices
+ARTICLE 3 FEES AND PAYMENT › 3.4 Taxes
+ARTICLE 3 FEES AND PAYMENT › 3.5 Price Changes
+ARTICLE 4 TERM AND TERMINATION
+ARTICLE 4 TERM AND TERMINATION › 4.1 Term
+ARTICLE 4 TERM AND TERMINATION › 4.2 Renewal
+ARTICLE 4 TERM AND TERMINATION › 4.3 Termination for Cause
+ARTICLE 4 TERM AND TERMINATION › 4.3 Termination for Cause › (a) materially breaches this Agreement and does not cure the breach…
+ARTICLE 4 TERM AND TERMINATION › 4.3 Termination for Cause › (b) becomes insolvent, makes an assignment for the benefit of creditors,…
+ARTICLE 4 TERM AND TERMINATION › 4.4 Effect of Termination
+ARTICLE 4 TERM AND TERMINATION › 4.5 Data Export
+ARTICLE 5 CUSTOMER DATA AND SECURITY
+ARTICLE 5 CUSTOMER DATA AND SECURITY › 5.1 Ownership
+ARTICLE 5 CUSTOMER DATA AND SECURITY › 5.2 Security Measures
+ARTICLE 5 CUSTOMER DATA AND SECURITY › 5.3 Security Incidents
+ARTICLE 5 CUSTOMER DATA AND SECURITY › 5.4 Data Location
+ARTICLE 5 CUSTOMER DATA AND SECURITY › 5.5 Subprocessors
+ARTICLE 6 SERVICE LEVELS
+ARTICLE 6 SERVICE LEVELS › 6.1 Availability
+ARTICLE 6 SERVICE LEVELS › 6.2 Service Credits
+ARTICLE 6 SERVICE LEVELS › 6.3 Chronic Failure
+ARTICLE 6 SERVICE LEVELS › 6.4 Support
+ARTICLE 7 CONFIDENTIALITY
+ARTICLE 7 CONFIDENTIALITY › 7.1 Confidential Information
+ARTICLE 7 CONFIDENTIALITY › 7.2 Obligations
+ARTICLE 7 CONFIDENTIALITY › 7.3 Exceptions
+ARTICLE 7 CONFIDENTIALITY › 7.3 Exceptions › (a) is or becomes publicly available through no fault of the receiving…
+ARTICLE 7 CONFIDENTIALITY › 7.3 Exceptions › (b) was known to it without restriction before disclosure
+ARTICLE 7 CONFIDENTIALITY › 7.3 Exceptions › (c) is independently developed without use of the Confidential…
+ARTICLE 7 CONFIDENTIALITY › 7.3 Exceptions › (d) is rightfully received from a third party without a duty of…
+ARTICLE 7 CONFIDENTIALITY › 7.4 Compelled Disclosure
+ARTICLE 8 WARRANTIES
+ARTICLE 8 WARRANTIES › 8.1 Mutual Warranties
+ARTICLE 8 WARRANTIES › 8.2 Platform Warranty
+ARTICLE 8 WARRANTIES › 8.3 Professional Services Warranty
+ARTICLE 8 WARRANTIES › 8.4 Disclaimer
+ARTICLE 9 INDEMNIFICATION
+ARTICLE 9 INDEMNIFICATION › 9.1 By Provider
+ARTICLE 9 INDEMNIFICATION › 9.2 By Customer
+ARTICLE 9 INDEMNIFICATION › 9.3 Procedure
+ARTICLE 10 LIMITATION OF LIABILITY
+ARTICLE 10 LIMITATION OF LIABILITY › 10.1 Exclusion of Indirect Damages
+ARTICLE 10 LIMITATION OF LIABILITY › 10.2 Liability Cap
+ARTICLE 10 LIMITATION OF LIABILITY › 10.3 Exceptions
+ARTICLE 11 GENERAL
+ARTICLE 11 GENERAL › 11.1 Force Majeure
+ARTICLE 11 GENERAL › 11.2 Assignment
+ARTICLE 11 GENERAL › 11.3 Notices
+ARTICLE 11 GENERAL › 11.4 Governing Law
+ARTICLE 11 GENERAL › 11.5 Dispute Resolution
+ARTICLE 11 GENERAL › 11.6 Entire Agreement
+ARTICLE 11 GENERAL › 11.7 Amendment and Waiver
+ARTICLE 11 GENERAL › 11.8 Severability
+== contracts/mutual-nda.docx: contract
+Recital WHEREAS the parties are evaluating a possible collaboration
+Recital NOW, THEREFORE, the parties hereby agree as follows
+1. Confidential Information
+1. Confidential Information › 1.1 Definition
+1. Confidential Information › 1.2 Marking
+2. Obligations of the Receiving Party
+2. Obligations of the Receiving Party › 2.1 Use
+2. Obligations of the Receiving Party › 2.2 Disclosure to Representatives
+2. Obligations of the Receiving Party › 2.3 Standard of Care
+2. Obligations of the Receiving Party › 2.4 No Reverse Engineering
+3. Exclusions
+3. Exclusions › 3.1 The obligations in Section 2 do not apply to information that
+3. Exclusions › 3.2 Required by Law
+4. Term and Return of Information
+4. Term and Return of Information › 4.1 Term
+4. Term and Return of Information › 4.2 Return or Destruction
+5. No Licence and No Obligation
+5. No Licence and No Obligation › 5.1 No Licence
+5. No Licence and No Obligation › 5.2 No Obligation to Proceed
+5. No Licence and No Obligation › 5.3 No Warranty
+6. Remedies
+6. Remedies › 6.1 Injunctive Relief
+6. Remedies › 6.2 Export Control
+7. General
+7. General › 7.1 Governing Law
+7. General › 7.2 Entire Agreement
+7. General › 7.3 Counterparts

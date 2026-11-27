@@ -101,6 +101,9 @@ object ClauseDetector {
         return "$number $short"
     }
 
-    /** The end of the clause's name: a period, then a space and a capital or the line's end. */
-    private val sentenceEnd = Regex("\\.(?=\\s+\\p{Lu}|\\s*$)")
+    /**
+     * The end of the clause's name: a period, then a space and a capital (possibly after an opening quote,
+     * as in a definition: `1.1 Affiliate. "Affiliate" means…`) or the line's end.
+     */
+    private val sentenceEnd = Regex("\\.(?=\\s+[\"“‘']?\\p{Lu}|\\s*$)")
 }

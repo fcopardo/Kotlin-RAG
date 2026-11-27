@@ -95,6 +95,28 @@ class ContractTest {
     }
 
     @Test
+    fun `a definition clause keeps only the defined term's name`() {
+        val text = """
+            1.1 Affiliate. "Affiliate" means any entity that controls, or is controlled by, a party hereto.
+
+            1.2 Customer Data. “Customer Data” means all data that the Customer submits under this Agreement.
+
+            1.3 Platform. 'Platform' means the hosted software the parties shall use, as defined herein.
+
+            1.4 Order Form. Order Form means an ordering document signed by both parties hereto.
+
+            1.5 Term. The term of this Agreement shall begin on the effective date, and either party may terminate it.
+        """.trimIndent()
+
+        val clauses = ClauseDetector.detect(text)!!
+
+        assertEquals(
+            listOf("1.1 Affiliate", "1.2 Customer Data", "1.3 Platform", "1.4 Order Form", "1.5 Term"),
+            clauses.map { it.title },
+        )
+    }
+
+    @Test
     fun `a numbered paper is not a contract`() {
         val paper = """
             A Study of Bicycle Gears
