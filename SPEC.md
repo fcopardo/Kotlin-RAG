@@ -1220,8 +1220,8 @@ function in 2 pieces.
 **Code evaluation set** (`integration-tests/src/test/resources/eval/core-code.jsonl`): 20 questions over a frozen
 snapshot of `core` (32 files), 10 keyword (identifiers) and 10 paraphrase (no identifier words), each answered by
 one function's passage in a named section. Lexical, measured 2026-11-23: recall@5 0.85 (keyword 1.00, paraphrase
-0.70), MRR 0.65. Vector and hybrid: not yet measured (needs Ollama; `RAG_OLLAMA=1 ./gradlew :integration-tests:test
---tests rag.code.CodeEvalTest`). The structure of a committed mini-project (8 files, 2 packages, plus Python,
+0.70), MRR 0.65. With `mxbai-embed-large` (measured 2026-11-27, `RAG_OLLAMA=1`): vector recall@5 0.95 (paraphrase
+0.90), MRR 0.68; hybrid 0.90 (paraphrase 0.80), MRR 0.77. Floors: lexical 0.85, hybrid 0.90, keyword 1.00. The structure of a committed mini-project (8 files, 2 packages, plus Python,
 TypeScript and C) is pinned by a reviewed `rag structure` golden.
 
 ### 18.9 Paper and contract evaluation (2026-11-27)
@@ -1242,7 +1242,21 @@ answered by exactly one passage of a named section, and a reviewed golden of eve
 | paper | 0.70 | 1.00 | 0.40 | 0.61 | 0.75 |
 | contract | 0.65 | 1.00 | 0.30 | 0.62 | 0.65 |
 
-Vector and hybrid: not yet measured (Ollama is not installed on the test machine; `RAG_OLLAMA=1`).
+With `mxbai-embed-large` (measured 2026-11-27, `RAG_OLLAMA=1`):
+
+| Kind | Mode | recall@5 | keyword | paraphrase | MRR |
+| --- | --- | --- | --- | --- | --- |
+| paper | vector | 0.90 | 0.90 | 0.90 | 0.73 |
+| paper | hybrid | **0.95** | 1.00 | 0.90 | 0.74 |
+| contract | vector | 1.00 | 1.00 | 1.00 | 0.97 |
+| contract | hybrid | **0.95** | 1.00 | 0.90 | 0.93 |
+
+Floors: lexical as measured, hybrid 0.95, keyword 1.00 in hybrid. The sets are small and were written by the same
+hand as the fixtures, so these figures say the pipeline works per kind, not how it compares with other systems.
+
+**No regression on books** (same day, same machine): *Compose* mxbai hybrid 0.80 (vector 0.80) and nomic hybrid
+0.75; *Art of War* mxbai hybrid 0.75 (vector 0.80) and nomic hybrid 0.85 (0.80 before), all at or above §18.6's
+figures. Not run: `DistractorEvalTest` (needs two more book PDFs) and `OnnxParityTest` (needs the ONNX model files).
 
 Review finding: a definition clause (`1.1 Affiliate. "Affiliate" means…`) kept the definition in its title,
 because the name's end was only recognized before a capital letter. A quote before the capital now counts too.

@@ -33,13 +33,13 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Timeout(120)
 class DocumentEvalTest {
-    private class Kind(val name: String, val lexicalFloor: Double) {
+    private class Kind(val name: String, val lexicalFloor: Double, val hybridFloor: Double) {
         val folder = File("src/test/resources/documents/${name}s")
         val questions: List<EvalQuestion> = Evaluation.load(File("src/test/resources/eval/${name}s.jsonl"))
         lateinit var store: SqliteStore
     }
 
-    private val kinds = listOf(Kind("paper", PAPER_LEXICAL_FLOOR), Kind("contract", CONTRACT_LEXICAL_FLOOR))
+    private val kinds = listOf(Kind("paper", PAPER_LEXICAL_FLOOR, PAPER_HYBRID_FLOOR), Kind("contract", CONTRACT_LEXICAL_FLOOR, CONTRACT_HYBRID_FLOOR))
     private lateinit var dir: File
 
     @BeforeAll
@@ -130,6 +130,7 @@ class DocumentEvalTest {
                 .associateBy { it.mode }
             s.values.forEach { println("${k.name} eval ${it.mode}: recall@5 %.2f MRR %.2f %s".format(it.recall, it.mrr, it.recallByKind)) }
             val hybrid = s.getValue(Mode.HYBRID)
+            assertTrue(hybrid.recall >= k.hybridFloor, "${k.name} hybrid recall@5 ${hybrid.recall}")
             assertTrue(hybrid.recall >= s.getValue(Mode.LEXICAL).recall, "${k.name}: hybrid ${hybrid.recall} below lexical")
             assertEquals(1.0, hybrid.recallByKind.getValue("keyword"), k.name)
         }
@@ -140,5 +141,9 @@ class DocumentEvalTest {
         const val PAPER_LEXICAL_FLOOR = 0.70
         /** Measured 2026-11-27: lexical recall@5 0.65 (keyword 1.00, paraphrase 0.30), MRR 0.62. */
         const val CONTRACT_LEXICAL_FLOOR = 0.65
+        /** Measured 2026-11-27 with mxbai-embed-large: hybrid recall@5 0.95 (paraphrase 0.90), MRR 0.74; vector 0.90. */
+        const val PAPER_HYBRID_FLOOR = 0.95
+        /** Measured 2026-11-27 with mxbai-embed-large: hybrid recall@5 0.95 (paraphrase 0.90), MRR 0.93; vector 1.00. */
+        const val CONTRACT_HYBRID_FLOOR = 0.95
     }
 }

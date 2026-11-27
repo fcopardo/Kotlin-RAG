@@ -102,9 +102,8 @@ class CodeEvalTest {
         val s = Evaluation.summarize(Evaluation.run(Searcher(store, embedder), questions, listOf(Mode.LEXICAL, Mode.VECTOR, Mode.HYBRID)), k = 5)
             .associateBy { it.mode }
         s.values.forEach { println("code eval ${it.mode}: recall@5 %.2f MRR %.2f %s".format(it.recall, it.mrr, it.recallByKind)) }
-        // Not measured yet (Ollama was not running on 2026-11-23): only what must hold anyway. Record the
-        // printed scores in SPEC §18.8 and turn them into floors.
         val hybrid = s.getValue(Mode.HYBRID)
+        assertTrue(hybrid.recall >= HYBRID_FLOOR, "hybrid recall@5 ${hybrid.recall}")
         assertTrue(hybrid.recall >= s.getValue(Mode.LEXICAL).recall, "hybrid ${hybrid.recall} below lexical")
         assertEquals(1.0, hybrid.recallByKind.getValue("keyword"))
     }
@@ -112,5 +111,7 @@ class CodeEvalTest {
     private companion object {
         /** Measured 2026-11-23: lexical recall@5 0.85 (keyword 1.00, paraphrase 0.70), MRR 0.65. */
         const val LEXICAL_FLOOR = 0.85
+        /** Measured 2026-11-27 with mxbai-embed-large: hybrid recall@5 0.90 (paraphrase 0.80), MRR 0.77; vector 0.95. */
+        const val HYBRID_FLOOR = 0.90
     }
 }
