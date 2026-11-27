@@ -1065,7 +1065,7 @@ Two long-running front ends over one shared `RagService` (`cli/src/main/kotlin/r
 - **Not in scope:** writing through the servers (indexing stays a CLI step), authentication (localhost only), and MCP resources and prompts.
 
 
-## 18. Documents, contracts and code (Phase 9, in progress)
+## 18. Documents, contracts and code (Phase 9, done)
 
 **Goal.** Index more than books — plain documents, contracts and source code — each with its own
 structure, without disturbing the book pipeline.
@@ -1175,8 +1175,11 @@ common ranking.
    button take books, documents and single source files (Phase 9 app update, steps 2–4).
 6. ✅ Docs (`docs/DOCUMENTS.md`, `docs/CODE.md`, README) and the sample app's kind selector (All by
    default).
-7. Optional: searching several database files at once, for people who split by kind but want one
-   query. Needs a `(db, bookId)` pair in `Hit`. Not needed to search across kinds — one file does.
+7. Dropped: searching several database files at once. A client that splits its documents over several files runs
+   one query per file and joins the results itself; `Hit` stays as it is. Scores from different files aren't
+   comparable (keyword scores weigh words by each file's own vocabulary), so the client should show one section
+   per file or interleave hits by rank, rather than sort by score. Searching across kinds needs none of this:
+   one file holds every kind, and `searchByKind` shows them side by side.
 
 ### 18.6 Acceptance criteria
 - **No regression on books** (the gate for every step): `./gradlew check` with every opt-in variable
