@@ -19,6 +19,7 @@ import rag.epub.EpubBookSource
 import rag.index.EmbedResult
 import rag.index.IndexResult
 import rag.index.Indexer
+import rag.language.DocumentLanguages
 import rag.search.Hit
 import rag.search.Mode
 import rag.search.Searcher
@@ -88,8 +89,17 @@ class RagEngine(
      */
     private val searchers = HashMap<String?, Pair<Embedder?, Searcher>>()
 
-    private fun searcher(): Searcher {
-        val embedder = provider.embedder()
+    /**
+     * The searcher for a search over [languages] (null: every language in the library): the provider's model for
+     * those languages (SPEC §19.4), or its default embedder.
+     */
+    private fun searcher(languages: Collection<String>? = null, bookId: Long? = null): Searcher {
+        val scope = when {
+            bookId != null -> setOfNotNull(store.book(bookId)?.language)
+            languages != null -> languages.map(DocumentLanguages::normalize).toSet()
+            else -> store.books().map { it.language }.toSet()
+        }
+        val embedder = provider.searchModel(scope)?.let(provider::embedderFor) ?: provider.embedder()
         searchers[embedder?.model]?.let { (e, s) -> if (e === embedder) return s }
         return Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes, defaultLanguage = defaultLanguage)
             .also { searchers[embedder?.model] = embedder to it }
@@ -113,19 +123,50 @@ class RagEngine(
     ): IndexResult = locked {
         val context = coroutineContext
         try {
-            indexer.index(file, tocPages, reindex, provider.embedder().takeIf { embed }, embedDim, locationSize, language) { done, total ->
+            // A provider with routes (SPEC §19.4): store first, then embed with each model the document's language needs,
+            // one model at a time. Without routes: the one embedder, as before.
+            val routed = embed && provider.indexModels(DocumentLanguages.NONE).isNotEmpty()
+            // Not provider.embedder().takeIf { … }: that would load the default model even when it isn't used.
+            val embedder = if (embed && !routed) provider.embedder() else null
+            val result = indexer.index(file, tocPages, reindex, embedder, embedDim, locationSize, language) { done, total ->
                 context.ensureActive()
                 progress.onBatch(done, total)
             }
+            if (!routed || result.skipped) result else result.copy(embedded = embedRouted(result.bookId, progress))
         } finally {
             searchers.clear()
         }
     }
 
+    /**
+     * Embeds [bookId] with every model its language needs ([ModelProvider.indexModels]), each loaded in turn; models
+     * whose files are missing are skipped. Progress restarts for each model. The last model's result, or null if none.
+     */
+    private suspend fun embedRouted(bookId: Long, progress: Progress): EmbedResult? {
+        val context = coroutineContext
+        val language = store.book(bookId)!!.language
+        var last: EmbedResult? = null
+        for (model in provider.indexModels(language)) {
+            val embedder = provider.embedderFor(model) ?: continue
+            last = indexer.embed(bookId, embedder, embedDim, add = true) { done, total ->
+                context.ensureActive()
+                progress.onBatch(done, total)
+            }
+        }
+        return last
+    }
+
     /** Embeds what [index] didn't finish (e.g. after a cancellation). */
     suspend fun embed(bookId: Long, progress: Progress = Progress { _, _ -> }): EmbedResult = locked {
-        val embedder = requireNotNull(provider.embedder()) { "RagEngine has no embedder" }
         val context = coroutineContext
+        if (provider.indexModels(DocumentLanguages.NONE).isNotEmpty()) {
+            try {
+                return@locked requireNotNull(embedRouted(bookId, progress)) { "RagEngine has no model for book $bookId" }
+            } finally {
+                searchers.clear()
+            }
+        }
+        val embedder = requireNotNull(provider.embedder()) { "RagEngine has no embedder" }
         try {
             indexer.embed(bookId, embedder, embedDim) { done, total ->
                 context.ensureActive()
@@ -152,7 +193,7 @@ class RagEngine(
         /** The language [query] is written in; null: the engine's default language, else detected (SPEC §19.4). */
         queryLanguage: String? = null,
     ): List<Hit> = locked {
-        searcher().search(query, k, bookId, mode, subject, kind, languages, queryLanguage)
+        searcher(languages, bookId).search(query, k, bookId, mode, subject, kind, languages, queryLanguage)
     }
 
     /**
@@ -168,7 +209,7 @@ class RagEngine(
         languages: Collection<String>? = null,
         queryLanguage: String? = null,
     ): Map<String, List<Hit>> = locked {
-        searcher().searchByKind(query, kPerKind, kinds, mode, subject, languages, queryLanguage)
+        searcher(languages).searchByKind(query, kPerKind, kinds, mode, subject, languages, queryLanguage)
     }
 
     /** [sectionText] of [hit]'s section and paragraph. */

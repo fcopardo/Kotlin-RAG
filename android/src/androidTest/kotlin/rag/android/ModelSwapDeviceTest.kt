@@ -123,4 +123,42 @@ class ModelSwapDeviceTest {
             c.provider.close()
         }
     }
+
+    /** The Phase 10 stand-ins: mxbai as the English expert, nomic as the shared model; no Spanish expert. */
+    private fun standIn(maxLoaded: Int) = ForcedModelPolicy(maxLoadedModels = maxLoaded, base = object : DefaultModelPolicy() {
+        override fun expert(language: String, tier: DeviceTier): OnnxModel? = if (language == "en") mxbai else null
+        override fun shared(tier: DeviceTier): OnnxModel? = nomic
+    })
+
+    @Test
+    fun anEnglishExpertAndASharedModelRouteRealSearchesUnderEitherLimit() = runBlocking {
+        val english = "The library reads each book once and stores its text with the chapters, paragraphs and sentences it " +
+            "found. When you ask a question, it looks for the words you typed and for passages that mean the same thing. "
+        val spanish = "La biblioteca lee cada libro una sola vez y guarda su texto con los capítulos, párrafos y frases que " +
+            "encontró. Cuando haces una pregunta, busca las palabras que escribiste y también los pasajes que significan lo mismo. "
+        for (maxLoaded in listOf(1, 2)) {
+            val dir = File(context.cacheDir, "rag-swap-routes").apply { deleteRecursively(); mkdirs() }
+            val c = Counting()
+            RagEngine(context, File(dir, "lib.db"), standIn(maxLoaded), c.provider).use { engine ->
+                val t = SystemClock.elapsedRealtime()
+                val en = engine.index(File(dir, "notes.md").apply { writeText("# Notes\n\n" + english.repeat(3)) }).bookId
+                val es = engine.index(File(dir, "notas.md").apply { writeText("# Notas\n\n" + spanish.repeat(3)) }).bookId
+                log("routes, max $maxLoaded: indexed 2 documents in ${SystemClock.elapsedRealtime() - t} ms, ${c.opens} loads")
+                assertTrue(c.peakOpen <= maxLoaded, "never more than $maxLoaded models open")
+                rag.store.SqliteStore(File(dir, "lib.db").path, rag.store.BundledSqlDriver()).use { store ->
+                    assertEquals(listOf(mxbai.storedName, nomic.storedName), store.book(en)!!.models.map { it.model })
+                    assertEquals(listOf(nomic.storedName), store.book(es)!!.models.map { it.model })
+                }
+                val onlyEnglish = engine.search("where does the library keep what it reads", languages = listOf("en"), mode = Mode.VECTOR)
+                assertEquals(mxbai.storedName, c.provider.loaded().last(), "one language: the English expert")
+                assertTrue(onlyEnglish.all { it.language == "en" })
+                val both = engine.search("dónde guarda la biblioteca lo que lee", mode = Mode.VECTOR)
+                assertEquals(nomic.storedName, c.provider.loaded().last(), "across languages: the shared model")
+                assertEquals(setOf("en", "es"), both.map { it.language }.toSet())
+                assertTrue(c.peakOpen <= maxLoaded)
+                log("routes, max $maxLoaded: ${c.opens} loads in all, peak ${c.peakOpen} open")
+            }
+            c.provider.close()
+        }
+    }
 }

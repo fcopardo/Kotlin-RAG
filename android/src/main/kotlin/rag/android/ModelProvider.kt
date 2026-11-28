@@ -15,6 +15,18 @@ interface ModelProvider : Closeable {
 
     /** The embedder for indexing and searching on this device, loading it if needed; null means keywords only. */
     fun embedder(): Embedder?
+
+    /**
+     * The models a document in [language] is embedded with, in order (SPEC §19.4); empty: just [embedder]'s.
+     * The engine asks [embedderFor] each in turn, so a provider that holds one model at a time can swap between them.
+     */
+    fun indexModels(language: String): List<OnnxModel> = emptyList()
+
+    /** The model a search over documents in [languages] uses; null: [embedder]'s. */
+    fun searchModel(languages: Set<String>): OnnxModel? = null
+
+    /** The embedder for [model], loading it as the policy allows; null when it can't be had. Default: [embedder]. */
+    fun embedderFor(model: OnnxModel): Embedder? = embedder()
 }
 
 /** One embedder chosen by the caller, or none: what `RagEngine(context, dbFile, embedder)` uses. Never closes it. */
@@ -71,8 +83,18 @@ class CachingModelProvider(
         return embedderFor(p.model(p.tier(memory)))
     }
 
+    override fun indexModels(language: String): List<OnnxModel> {
+        requireBound()
+        return ModelRoutes.indexModels(policy!!, policy!!.tier(memory), language)
+    }
+
+    override fun searchModel(languages: Set<String>): OnnxModel? {
+        requireBound()
+        return ModelRoutes.searchModel(policy!!, policy!!.tier(memory), languages)
+    }
+
     /** The embedder for [model], loading it (and unloading others) as the policy allows. */
-    fun embedderFor(model: OnnxModel): Embedder? {
+    override fun embedderFor(model: OnnxModel): Embedder? {
         requireBound()
         // A read moves it to the newest position (access order).
         loaded[model]?.let { return it }

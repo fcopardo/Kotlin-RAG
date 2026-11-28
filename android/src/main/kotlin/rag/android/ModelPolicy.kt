@@ -21,6 +21,42 @@ interface ModelPolicy {
 
     /** How many embedding models may be loaded at the same time on this device (at least 1). */
     fun maxLoadedModels(memory: DeviceMemory): Int
+
+    /**
+     * The expert model for documents and queries in [language] (ISO 639) on a [tier] device, or null when the language
+     * has none (SPEC §19.4). Default: the tier's model, for every language, as before languages existed.
+     */
+    fun expert(language: String, tier: DeviceTier): OnnxModel? = model(tier)
+
+    /**
+     * The shared model, for searches across languages and for languages without an expert, or null when there is none.
+     * Default: the tier's model.
+     */
+    fun shared(tier: DeviceTier): OnnxModel? = model(tier)
+}
+
+/**
+ * Which models a document is embedded with and which one a search uses (SPEC §19.4), from a policy's experts and
+ * shared model. Code ("zxx") and undetermined text ("und") count as English: their words are English identifiers.
+ */
+object ModelRoutes {
+    private fun routed(language: String): String =
+        if (language == "zxx" || language == "und") "en" else language.lowercase()
+
+    /** Every model a document in [language] needs vectors from, its expert first; duplicates once. */
+    fun indexModels(policy: ModelPolicy, tier: DeviceTier, language: String): List<OnnxModel> =
+        listOfNotNull(policy.expert(routed(language), tier), policy.shared(tier)).distinct()
+
+    /**
+     * The model a search over documents in [languages] uses: the expert when they are one language (or, without one,
+     * the shared model); the shared model across languages (or, without one, the experts' model if they all share it).
+     */
+    fun searchModel(policy: ModelPolicy, tier: DeviceTier, languages: Set<String>): OnnxModel? {
+        val routed = languages.map(::routed).toSet()
+        if (routed.size == 1) return policy.expert(routed.single(), tier) ?: policy.shared(tier)
+        return policy.shared(tier) ?: routed.mapNotNull { policy.expert(it, tier) }.distinct().singleOrNull()
+            ?: if (routed.isEmpty()) policy.expert("en", tier) else null
+    }
 }
 
 /**

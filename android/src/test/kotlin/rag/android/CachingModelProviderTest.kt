@@ -165,4 +165,13 @@ class CachingModelProviderTest {
         p.close()
         assertEquals(emptyList(), p.loaded())
     }
+
+    @Test
+    fun `routes come from the bound policy and the device's tier`() {
+        val p = CachingModelProvider(phone4) { _, _, _ -> null }
+        assertFailsWith<IllegalStateException> { p.indexModels("en") }
+        p.bind(DefaultModelPolicy())
+        assertEquals(listOf(nomic), p.indexModels("es"))
+        assertEquals(nomic, p.searchModel(setOf("en", "es")))
+    }
 }

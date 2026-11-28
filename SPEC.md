@@ -1368,6 +1368,16 @@ changes.
   keyword lists are merged by rank (BM25 scores of different tables aren't comparable). Schema version 9 moves existing
   non-English books to the new tables. On the Spanish book (430 pages): "varita" finds "varitas", "pocion" finds "Poción".
   Found on the way: that book's chapters aren't detected (one chapter "by fallback"); its headings are Spanish.
+- **Built 2026-11-28 (step 7):** the policy names an expert per language (`ModelPolicy.expert(language, tier)`) and a
+  shared model (`shared(tier)`); by default both are the tier's model, so nothing changes until Phase 11 picks real
+  ones. `ModelRoutes` derives the routes: a document is embedded with its language's expert, then the shared model
+  (code and undetermined text count as English); a one-language search uses the expert (or the shared model when the
+  language has none), a search across languages the shared model. `RagEngine` stores a document first, then embeds it
+  with each model in turn through the provider, so a device holding one model at a time swaps between them;
+  `embed(bookId)` adds what the language needs and keeps other sets. Measured on a Pixel 8a with `mxbai` as the English
+  expert and `nomic` as the shared stand-in (`ModelSwapDeviceTest`): indexing an English and a Spanish document takes 2
+  loads either way (3.7 s one at a time, 2.8 s two at a time); an English search then a cross-language search takes 2
+  more loads one at a time and none two at a time; both loaded together use about 600 MB (PSS).
 - **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.
