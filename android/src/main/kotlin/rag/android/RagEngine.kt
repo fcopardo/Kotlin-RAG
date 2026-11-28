@@ -37,12 +37,18 @@ import kotlin.coroutines.coroutineContext
  * Embedding can be cancelled between batches: the book stays `partial` and [embed] resumes it.
  * Reading and splitting a book (before embedding) runs to completion once started.
  *
- * @param embedder for vector search; null gives keyword-only indexes and search. Not closed by [close].
+ * Models come from a [ModelProvider] following a [ModelPolicy] (SPEC §19.2): the engine hands the policy to the
+ * provider and asks the provider for the embedder each operation needs. Neither is closed by [close]: they belong
+ * to the caller and may be shared.
+ *
+ * @param policy the model rules, usually [ModelPolicies.current].
+ * @param provider loads the models, e.g. [RagModels.provider]; its embedder may be null (keyword-only indexes and search).
  */
 class RagEngine(
     context: Context,
     dbFile: File,
-    private val embedder: Embedder? = null,
+    private val policy: ModelPolicy,
+    private val provider: ModelProvider,
     private val embedDim: Int = Indexer.DEFAULT_DIM,
     /**
      * RAM for cached 1-bit vectors. The default 16 MB holds ~190k paragraphs (~115 books); on the
@@ -51,8 +57,21 @@ class RagEngine(
     private val bitsCacheBytes: Long = Searcher.BITS_CACHE_BYTES,
 ) : Closeable {
 
+    /**
+     * One caller-chosen embedder, or none (keyword-only indexes and search): a [FixedModelProvider] under the
+     * current policy. The [embedder] is not closed by [close].
+     */
+    constructor(
+        context: Context,
+        dbFile: File,
+        embedder: Embedder? = null,
+        embedDim: Int = Indexer.DEFAULT_DIM,
+        bitsCacheBytes: Long = Searcher.BITS_CACHE_BYTES,
+    ) : this(context, dbFile, ModelPolicies.current, FixedModelProvider(embedder), embedDim, bitsCacheBytes)
+
     init {
         PDFBoxResourceLoader.init(context.applicationContext)
+        provider.bind(policy)
     }
 
     private val store = SqliteStore(dbFile.path, BundledSqlDriver())
@@ -61,7 +80,18 @@ class RagEngine(
         PdfBookSource(), EpubBookSource(), TextBookSource(), HtmlBookSource(), DocxBookSource(), CodeBookSource(),
     )))
     private val lock = Mutex()
-    private var searcher: Searcher? = null
+    /**
+     * One searcher per embedding model (null = keywords only), kept while the provider hands out the same
+     * embedder; a model that was unloaded and opened again gets a new searcher, so no searcher keeps a closed one.
+     */
+    private val searchers = HashMap<String?, Pair<Embedder?, Searcher>>()
+
+    private fun searcher(): Searcher {
+        val embedder = provider.embedder()
+        searchers[embedder?.model]?.let { (e, s) -> if (e === embedder) return s }
+        return Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes)
+            .also { searchers[embedder?.model] = embedder to it }
+    }
 
     /** Reports embedding progress: texts embedded so far and in total. */
     fun interface Progress {
@@ -79,18 +109,18 @@ class RagEngine(
     ): IndexResult = locked {
         val context = coroutineContext
         try {
-            indexer.index(file, tocPages, reindex, embedder.takeIf { embed }, embedDim, locationSize) { done, total ->
+            indexer.index(file, tocPages, reindex, provider.embedder().takeIf { embed }, embedDim, locationSize) { done, total ->
                 context.ensureActive()
                 progress.onBatch(done, total)
             }
         } finally {
-            searcher = null
+            searchers.clear()
         }
     }
 
     /** Embeds what [index] didn't finish (e.g. after a cancellation). */
     suspend fun embed(bookId: Long, progress: Progress = Progress { _, _ -> }): EmbedResult = locked {
-        val embedder = requireNotNull(embedder) { "RagEngine has no embedder" }
+        val embedder = requireNotNull(provider.embedder()) { "RagEngine has no embedder" }
         val context = coroutineContext
         try {
             indexer.embed(bookId, embedder, embedDim) { done, total ->
@@ -98,7 +128,7 @@ class RagEngine(
                 progress.onBatch(done, total)
             }
         } finally {
-            searcher = null
+            searchers.clear()
         }
     }
 
@@ -114,8 +144,7 @@ class RagEngine(
         subject: String? = null,
         kind: String? = null,
     ): List<Hit> = locked {
-        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes).also { searcher = it }
-        s.search(query, k, bookId, mode, subject, kind)
+        searcher().search(query, k, bookId, mode, subject, kind)
     }
 
     /**
@@ -129,8 +158,7 @@ class RagEngine(
         mode: Mode = Mode.HYBRID,
         subject: String? = null,
     ): Map<String, List<Hit>> = locked {
-        val s = searcher ?: Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes).also { searcher = it }
-        s.searchByKind(query, kPerKind, kinds, mode, subject)
+        searcher().searchByKind(query, kPerKind, kinds, mode, subject)
     }
 
     /** [sectionText] of [hit]'s section and paragraph. */
@@ -195,9 +223,9 @@ class RagEngine(
     /** What a book is about: its file's subjects, plus any from `rag subjects` on the desktop (SPEC §8.5). */
     suspend fun subjects(bookId: Long): List<BookSubject> = locked { store.subjects(bookId) }
 
-    suspend fun deleteBook(bookId: Long) = locked { store.deleteBook(bookId).also { searcher = null } }
+    suspend fun deleteBook(bookId: Long) = locked { store.deleteBook(bookId).also { searchers.clear() } }
 
-    /** Closes the database. The [embedder] belongs to the caller, who closes it (it may be shared). */
+    /** Closes the database. The provider and its models belong to the caller, who closes them (they may be shared). */
     override fun close() = store.close()
 
     private suspend fun <T> locked(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }

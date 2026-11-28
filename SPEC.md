@@ -1296,9 +1296,21 @@ The policy stays called from where the rules are called today: `RagModels.tier`,
 constructor (one embedder, or none) stays, as a fixed provider with a single model; the new constructor takes the
 policy and the provider.
 
-The interfaces are platform-neutral (`core`); the device-memory reading and the ONNX provider are Android's
-(`:android`). The desktop CLI keeps choosing its model by flags (`--embed-model`, `--onnx-dir`); it can adopt a
-policy later if it needs one.
+The policy and the providers live in `:android`, next to the tiers and the ONNX models they decide about; they
+move to `core` if the desktop ever needs a policy. The desktop CLI keeps choosing its model by flags
+(`--embed-model`, `--onnx-dir`). `ModelPolicies.force(policy)` replaces the policy for the process (what
+`RagModels` and new providers use) and `ModelPolicies.reset()` restores the default; `ForcedModelPolicy` overrides
+only a tier or the number of models loaded at once, on top of a base policy.
+
+**Built 2026-11-27 (steps 1–2):** `ModelPolicy`, `DefaultModelPolicy` (today's rules, plus two models at once on the
+large tier and one on the small), `ForcedModelPolicy`, `ModelPolicies`; `ModelProvider`, `FixedModelProvider` (the old
+constructor), `CachingModelProvider` (least recently used out, room made before a load, so the limit holds while a
+model loads), `RagModels.provider(context, modelsRoot)`; `RagEngine(context, dbFile, policy, provider)`, with one
+searcher per model. The English results are unchanged: every evaluation set, lexical and with Ollama, scored the
+same before and after; the Android goldens are byte-identical. Measured on the Lenovo TB321FU tablet with the real
+int8 models (`ModelSwapDeviceTest`, opt-in with `ragModelsDir`): loading `mxbai-embed-large` takes 1.4–1.6 s and
+adds about 320 MB (PSS), `nomic-embed-text` 0.65–0.8 s and about 140 MB; one at a time, every switch reloads and two
+are never open; two at a time, each loads once.
 
 ### 19.3 Steps (each ends with passing tests)
 1. **Isolate the policy, no behaviour change.** `ModelPolicy` and the default policy hold today's rules; `RagModels`

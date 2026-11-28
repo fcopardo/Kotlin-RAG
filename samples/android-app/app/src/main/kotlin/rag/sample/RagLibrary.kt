@@ -2,6 +2,7 @@ package rag.sample
 
 import android.content.Context
 import rag.android.DeviceTier
+import rag.android.ModelPolicies
 import rag.android.RagEngine
 import rag.android.RagModels
 import kotlinx.coroutines.Dispatchers
@@ -56,9 +57,10 @@ object RagLibrary {
     }
 
     private fun create(context: Context): RagEngine {
-        // Without the model files the app still works, with keyword search only. The model loads on
-        // first use, not here, so indexing reads each book before the model takes memory.
-        val embedder = if (hasModel(context)) RagModels.open(tier(context), modelDir(context)) else null
-        return RagEngine(context, File(context.filesDir, "library.db"), embedder)
+        // The policy picks the model; the provider opens it from models/<name>/ when its files are there, on
+        // first use (so indexing reads each book before the model takes memory). Without the files the app
+        // still works, with keyword search only.
+        val provider = RagModels.provider(context, File(context.getExternalFilesDir(null), "models"))
+        return RagEngine(context, File(context.filesDir, "library.db"), ModelPolicies.current, provider)
     }
 }

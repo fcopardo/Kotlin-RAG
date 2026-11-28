@@ -15,7 +15,7 @@ enum class DeviceTier { LARGE, SMALL }
 data class DeviceMemory(val totalBytes: Long, val lowRam: Boolean)
 
 /**
- * Picks the embedding model for a phone. The library doesn't download models: the app ships or
+ * Picks the embedding model for a phone, by the rules of [ModelPolicies.current] (SPEC §19.2). The library doesn't download models: the app ships or
  * fetches the files [OnnxModel] names (`modelFile`, `vocabFile` from `repository`) and opens them
  * with [OnnxModel.open].
  *
@@ -23,36 +23,33 @@ data class DeviceMemory(val totalBytes: Long, val lowRam: Boolean)
  * both models' vectors in one desktop-built DB. Books without them are searched by keywords.
  */
 object RagModels {
-    /**
-     * 5 GiB: phones sold as 6 GB report about 5.3–5.6 GiB, since the kernel and firmware keep
-     * the rest. Measured: the large model peaks at ≈ 600 MB while indexing (SPEC §15.6).
-     */
-    const val LARGE_TIER_MIN_BYTES = 5L * 1024 * 1024 * 1024
+    /** See [DefaultModelPolicy.LARGE_TIER_MIN_BYTES]. */
+    const val LARGE_TIER_MIN_BYTES = DefaultModelPolicy.LARGE_TIER_MIN_BYTES
 
-    fun tier(memory: DeviceMemory): DeviceTier =
-        if (!memory.lowRam && memory.totalBytes >= LARGE_TIER_MIN_BYTES) DeviceTier.LARGE else DeviceTier.SMALL
+    /** The tier [ModelPolicies.current] gives this memory. */
+    fun tier(memory: DeviceMemory): DeviceTier = ModelPolicies.current.tier(memory)
 
-    fun model(tier: DeviceTier): OnnxModel = when (tier) {
-        DeviceTier.LARGE -> OnnxModels.MXBAI_EMBED_LARGE_INT8
-        DeviceTier.SMALL -> OnnxModels.NOMIC_EMBED_TEXT_INT8
-    }
+    /** The model [ModelPolicies.current] gives this tier. */
+    fun model(tier: DeviceTier): OnnxModel = ModelPolicies.current.model(tier)
 
-    /**
-     * ONNX Runtime settings per tier. The small tier turns the CPU memory arena off: on the S25 that
-     * kept the indexing peak at 384 MB instead of 425 MB, for 59 s instead of 45 s on a 205-page book.
-     */
-    fun sessionOptions(tier: DeviceTier): OrtSession.SessionOptions = OrtSession.SessionOptions().apply {
-        if (tier == DeviceTier.SMALL) {
-            setCPUArenaAllocator(false)
-            setMemoryPatternOptimization(false)
-        }
-    }
+    /** ONNX Runtime settings per tier, from [ModelPolicies.current]. */
+    fun sessionOptions(tier: DeviceTier): OrtSession.SessionOptions = ModelPolicies.current.sessionOptions(tier)
 
     /** Opens the tier's model from [dir], which holds the files of [OnnxModel.repository]. */
     fun open(tier: DeviceTier, dir: File): OnnxEmbedder = model(tier).open(dir, sessionOptions(tier))
 
     /** The model for this phone, unless the app forces a tier. */
     fun forDevice(context: Context, override: DeviceTier? = null): OnnxModel = model(override ?: tier(memory(context)))
+
+    /**
+     * A provider for [RagEngine] that opens models from `modelsRoot/<model.directoryName>` (the layout of
+     * docs/ANDROID.md §4) when their files are there, keeping as many loaded as the engine's policy allows.
+     */
+    fun provider(context: Context, modelsRoot: File): CachingModelProvider =
+        CachingModelProvider(memory(context)) { model, tier, policy ->
+            val dir = File(modelsRoot, model.directoryName)
+            if (dir.resolve(model.modelFile).isFile && dir.resolve(model.vocabFile).isFile) model.open(dir, policy.sessionOptions(tier)) else null
+        }
 
     fun memory(context: Context): DeviceMemory {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
