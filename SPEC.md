@@ -1353,6 +1353,10 @@ changes.
   `rag index` (and `language` on `Indexer.index`, `indexFolder`, `RagEngine.index`) overrides it; a version 7 database
   gains it on opening, detected from each stored text. It shows in `rag books`, `BookInfo` (`list_books`) and on every
   `Hit`.
+- **Built 2026-11-28 (step 5):** `languages` on `Searcher.search` and `searchByKind`, `RagEngine`, `RagService`;
+  `rag search --language en,es`; `language=en,es` on the HTTP API; `languages` on the MCP `search_books` tool. Codes
+  are normalized (case, spaces) and checked; a document matches when its language is in the set, and a code project
+  (`zxx`) always matches.
 - **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.

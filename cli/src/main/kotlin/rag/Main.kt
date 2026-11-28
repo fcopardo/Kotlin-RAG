@@ -221,7 +221,7 @@ private class EmbedCommand : EmbeddingCommand("embed") {
     }
 }
 
-private class SearchCommand : CliktCommand(name = "search") {
+internal class SearchCommand : CliktCommand(name = "search") {
     override fun help(context: Context) = "Search indexed books: exact, keyword and meaning-based."
     val db by option("--db").required()
     val query by option("--query", "-q", help = "What to look for").required()
@@ -230,6 +230,8 @@ private class SearchCommand : CliktCommand(name = "search") {
     val mode by option("--mode", help = "hybrid | lexical | vector").choice("hybrid", "lexical", "vector").default("hybrid")
     val subject by option("--subject", help = "Only books about this subject (see `rag books`, `rag subjects`)")
     val kind by option("--kind", help = "Only documents of this kind: ${DocumentKinds.ALL.joinToString(", ") { it.name }}")
+    val languages by option("--language", help = "Only documents in these languages: ISO 639 codes, comma-separated (e.g. en,es); code always matches")
+        .convert { v -> v.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { runCatching { DocumentLanguages.normalize(it) }.getOrElse { e -> fail(e.message!!) } } }
     val json by option("--json", help = "Print results as JSON").flag()
     val noSummaries by option("--no-summaries", help = "Search paragraphs only").flag()
     val ollamaUrl by option("--ollama-url").default(OllamaEmbedder.DEFAULT_URL)
@@ -250,7 +252,7 @@ private class SearchCommand : CliktCommand(name = "search") {
         }
         val embedder = if (mode == "lexical" || model == null) null else embedderFor(model, ollamaUrl, onnxDir)
         val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
-            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject, kind)
+            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject, kind, languages)
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use

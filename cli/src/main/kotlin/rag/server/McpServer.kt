@@ -90,6 +90,7 @@ class McpServer(
                         subject = args.string("subject")?.takeIf { it.isNotBlank() },
                         mode = args.string("mode")?.let { Mode.valueOf(it.uppercase()) } ?: Mode.HYBRID,
                         kind = args.string("kind"),
+                        languages = args.string("languages")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.takeIf { it.isNotEmpty() },
                     )))
                 }
                 "list_books" -> buildJsonObject { put("books", json.encodeToJsonElement(service.books())) }
@@ -176,6 +177,7 @@ class McpServer(
                     "subject" to prop("string", "Only books about this subject, e.g. \"android\" or \"military strategy\" (matched by name or meaning)."),
                     "book_id" to prop("integer", "Only this book (ids from list_books)."),
                     "kind" to prop("string", "Only documents of this kind: book, paper, contract or code (see list_books)."),
+                    "languages" to prop("string", "Only documents in these languages: ISO 639 codes separated by commas, e.g. \"en\" or \"en,es\" (see list_books). Code projects always match. Default: all languages."),
                     "mode" to prop("string", "hybrid (default), lexical (keywords only) or vector (meaning only).") {
                         JsonObject(this + ("enum" to buildJsonArray { add("hybrid"); add("lexical"); add("vector") }))
                     },

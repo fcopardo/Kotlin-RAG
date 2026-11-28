@@ -37,4 +37,20 @@ class LanguageCommandTest {
         assertNotEquals(0, r.statusCode)
         assertTrue(r.stderr.contains("not an ISO 639 language code"), r.stderr)
     }
+
+    @Test
+    fun `rag search --language keeps only those languages`() {
+        val es = File(tmp, "notas.md").apply { writeText("# Notas\n\n" + spanish.repeat(3)) }
+        val pt = File(tmp, "otras.md").apply { writeText("# Otras\n\n" + spanish.repeat(4)) }
+        IndexCommand().test("--file ${es.path} --db ${db()} --no-embed")
+        IndexCommand().test("--file ${pt.path} --db ${db()} --no-embed --language pt")
+        val all = SearchCommand().test("--db ${db()} --query biblioteca --mode lexical --json")
+        val onlyPt = SearchCommand().test("--db ${db()} --query biblioteca --mode lexical --json --language PT")
+        assertEquals(0, onlyPt.statusCode, onlyPt.stderr)
+        assertTrue(all.stdout.contains("\"language\": \"es\"") || all.stdout.contains("\"language\":\"es\""), all.stdout.take(400))
+        assertTrue(!onlyPt.stdout.contains("\"es\""), onlyPt.stdout.take(400))
+        assertTrue(onlyPt.stdout.contains("pt"), onlyPt.stdout.take(400))
+        val bad = SearchCommand().test("--db ${db()} --query biblioteca --language Spanish")
+        assertNotEquals(0, bad.statusCode)
+    }
 }

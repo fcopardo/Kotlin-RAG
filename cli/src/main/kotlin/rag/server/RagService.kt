@@ -86,7 +86,10 @@ class RagService(
     private var dataVersion = -1L
 
     @Synchronized
-    fun search(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null): List<Hit> {
+    fun search(
+        query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null,
+        languages: List<String>? = null,
+    ): List<Hit> {
         require(query.isNotBlank()) { "query is empty" }
         require(k in 1..50) { "k must be between 1 and 50" }
         if (bookId != null) requireBook(bookId)
@@ -95,12 +98,15 @@ class RagService(
         // The most common primary model in scope; books without it are searched by keywords.
         val model = if (mode == Mode.LEXICAL) null
         else embedModel ?: books.mapNotNull { it.embedModel }.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
-        return searcher(model).search(query, k, bookId, mode, subject, kind)
+        return searcher(model).search(query, k, bookId, mode, subject, kind, languages)
     }
 
     @Synchronized
-    fun passages(query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null): List<Passage> =
-        search(query, k, bookId, subject, mode, kind).map { h ->
+    fun passages(
+        query: String, k: Int = 5, bookId: Long? = null, subject: String? = null, mode: Mode = Mode.HYBRID, kind: String? = null,
+        languages: List<String>? = null,
+    ): List<Passage> =
+        search(query, k, bookId, subject, mode, kind, languages).map { h ->
             Passage(
                 book = h.bookTitle, bookId = h.bookId, chapter = h.chapter.title,
                 pages = citation(h.pageKind, h.paragraph.pageStartLabel, h.paragraph.pageEndLabel),

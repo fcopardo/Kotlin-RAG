@@ -145,8 +145,10 @@ class RagEngine(
         mode: Mode = Mode.HYBRID,
         subject: String? = null,
         kind: String? = null,
+        /** Only documents in these languages (ISO 639 codes); code always matches. Null: all (SPEC §19.4). */
+        languages: Collection<String>? = null,
     ): List<Hit> = locked {
-        searcher().search(query, k, bookId, mode, subject, kind)
+        searcher().search(query, k, bookId, mode, subject, kind, languages)
     }
 
     /**
@@ -159,8 +161,9 @@ class RagEngine(
         kinds: List<String>? = null,
         mode: Mode = Mode.HYBRID,
         subject: String? = null,
+        languages: Collection<String>? = null,
     ): Map<String, List<Hit>> = locked {
-        searcher().searchByKind(query, kPerKind, kinds, mode, subject)
+        searcher().searchByKind(query, kPerKind, kinds, mode, subject, languages)
     }
 
     /** [sectionText] of [hit]'s section and paragraph. */

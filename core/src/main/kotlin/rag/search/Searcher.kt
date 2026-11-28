@@ -8,6 +8,7 @@ import rag.embed.Quantizer
 import rag.embed.Vectors
 import rag.extract.Normalizer
 import rag.index.UnitKind
+import rag.language.DocumentLanguages
 import rag.store.BookRow
 import rag.store.SqliteStore
 import rag.store.StoredUnit
@@ -156,10 +157,13 @@ class Searcher(
         subject: String? = null,
         /** Only documents of this kind: "book", "paper", "contract", "code" (SPEC §18.3). */
         kind: String? = null,
+        /** Only documents in these languages (ISO 639 codes); code projects ("zxx") always match. Null: all (SPEC §19.4). */
+        languages: Collection<String>? = null,
     ): List<Hit> {
         require(k > 0) { "k must be positive" }
         val inScope = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
-        val all = if (kind == null) inScope else inScope.filter { it.kind == kind }
+        val wanted = languageSet(languages)
+        val all = inScope.filter { (kind == null || it.kind == kind) && inLanguages(it, wanted) }
         val books = if (subject == null) all else booksAbout(subject, all.map { it.id }.toSet()).let { ids -> all.filter { it.id in ids } }
         if (books.isEmpty()) return emptyList()
         val n = maxOf(4 * k, 20)
@@ -192,11 +196,14 @@ class Searcher(
         kinds: List<String>? = null,
         mode: Mode = Mode.HYBRID,
         subject: String? = null,
+        /** Only documents in these languages, as in [search]. */
+        languages: Collection<String>? = null,
     ): Map<String, List<Hit>> {
         require(kPerKind > 0) { "kPerKind must be positive" }
 
-        // 1. Determine all books in scope (all books, narrowed by subject).
-        val allBooks = store.books()
+        // 1. Determine all books in scope (all books in the languages asked for, narrowed by subject).
+        val wanted = languageSet(languages)
+        val allBooks = store.books().filter { inLanguages(it, wanted) }
         val booksInScope = if (subject == null) allBooks
         else booksAbout(subject, allBooks.map { it.id }.toSet()).let { ids -> allBooks.filter { it.id in ids } }
         if (booksInScope.isEmpty()) return emptyMap()
@@ -221,6 +228,13 @@ class Searcher(
         }
         return result
     }
+
+    private fun languageSet(languages: Collection<String>?): Set<String>? =
+        languages?.map(DocumentLanguages::normalize)?.toSet()
+
+    /** A code project has no language, so it passes every language filter. */
+    private fun inLanguages(book: BookRow, wanted: Set<String>?) =
+        wanted == null || book.language == DocumentLanguages.NONE || book.language in wanted
 
     /**
      * Rank documents from [books] using the query's vector and keyword terms.
