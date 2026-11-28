@@ -1264,7 +1264,7 @@ figures. Not run: `DistractorEvalTest` (needs two more book PDFs) and `OnnxParit
 Review finding: a definition clause (`1.1 Affiliate. "Affiliate" means…`) kept the definition in its title,
 because the name's end was only recognized before a capital letter. A quote before the capital now counts too.
 
-## 19. Model policy and provider; languages (Phase 10, planned 2026-11-27)
+## 19. Languages: model policy, language metadata and multilingual search (Phase 10, planned 2026-11-27)
 
 ### 19.1 Why
 Which embedding model to use, and how many to keep in memory, is decided today by `RagModels.tier(DeviceMemory)`
@@ -1308,7 +1308,15 @@ policy later if it needs one.
    dbFile, policy, provider)`; the old constructor as a fixed provider. Tests: a fake provider records loads and
    unloads; the engine asks for what each operation needs; a swap-only policy never has two models open; the sample
    app switches to the new constructor and behaves the same.
-3. **Language steps (§19.4)**, planned separately once the evaluation sets in step 4 of that plan exist.
+3. **Language support (§19.4)**: language metadata and the search filter, per-language keyword search, the
+   expert/shared vector sets, and the policy's swapping, built and tested with today's English models plus one
+   candidate shared model. The steps are in the Phase 10 plan.
+
+**Order of the backlog (decided 2026-11-27):** Phase 10 builds language support; Phase 11 builds the evaluation
+sets (Spanish, cross-language, larger English sets) and uses them to choose the Spanish and shared models; the
+search rework (query rewriting, re-ranking) follows, tuned once on the chosen models. Phase 10 is model-agnostic
+on purpose: it decides where each model is used, not which model, so Phase 11 can swap candidates without code
+changes.
 
 ### 19.4 Languages: direction (decided 2026-11-27, to be measured)
 - **Language is document metadata**, detected once at index time and stored like the kind. A search takes all
@@ -1328,7 +1336,7 @@ policy later if it needs one.
   loaded together; a tight one searches with one, keeps the results, swaps, searches with the other and merges.
   Results from different models are merged by rank, never by score. Loading costs about 0.6 s per model on the
   S25 (large tier, ≈ 390 MB loaded; small tier ≈ 180 MB).
-- **Before choosing models:** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
+- **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.
 - **Search rework (query rewriting, re-ranking) comes after**, tuned once on the final models: weights and prompts
