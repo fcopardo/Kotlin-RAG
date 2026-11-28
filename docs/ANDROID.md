@@ -126,17 +126,30 @@ object RagLibrary {
     }
 
     private fun create(context: Context): RagEngine {
-        val tier = RagModels.tier(RagModels.memory(context))
-        val dir = File(context.getExternalFilesDir(null), "models/${RagModels.model(tier).directoryName}")
+        // The policy picks the models; the provider opens them from models/<name>/ when their files are there.
         // Without model files the engine still indexes and searches by keywords.
-        val embedder = if (File(dir, RagModels.model(tier).modelFile).isFile) RagModels.open(tier, dir) else null
-        return RagEngine(context, File(context.filesDir, "library.db"), embedder)
+        val provider = RagModels.provider(context, File(context.getExternalFilesDir(null), "models"))
+        return RagEngine(context, File(context.filesDir, "library.db"), ModelPolicies.current, provider,
+            defaultLanguage = Locale.getDefault().language)   // queries are in the phone's language unless a search says
     }
 }
 ```
 
-- **Closing:** `RagEngine.close()` closes the database but not the embedder; close that yourself
-  (`OnnxEmbedder.close()`). An engine that lives as long as the process needs neither.
+- **Closing:** `RagEngine.close()` closes the database but not the provider or its models; close the provider
+  yourself (`provider.close()`). An engine that lives as long as the process needs neither.
+- **One embedder of your own:** `RagEngine(context, dbFile, embedder)` still works, with that one model for
+  everything.
+- **Models and memory (SPEC §19):** a `ModelPolicy` decides which model a device uses and how many it may keep
+  loaded: two on the large tier, one on the small. The provider follows it, unloading the least recently used model
+  before loading another. To change the rules for the whole app, call `ModelPolicies.force(policy)` before creating
+  the engine, e.g. `ModelPolicies.force(ForcedModelPolicy(maxLoadedModels = 1))` to load one model at a time even on
+  a phone that could hold two; `ModelPolicies.reset()` restores the default. Measured on a Pixel 8a: loading
+  `mxbai-embed-large` takes 1.4–2 s and about 320 MB, `nomic-embed-text` 0.7–1 s and about 140 MB; both together
+  about 600 MB.
+- **Languages:** each document's language is detected when indexed (or given: `index(file, language = "es")`).
+  `search(…, languages = listOf("es"))` keeps those languages (code always matches); hits carry `hit.language`. A
+  policy can name an expert model per language and a shared model for searches across languages
+  (`ModelPolicy.expert`, `ModelPolicy.shared`); by default both are the tier's model, as before.
 - **Two engines on the same file** (e.g. in different processes) wait up to 10 seconds for each
   other's writes instead of failing.
 

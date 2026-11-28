@@ -59,6 +59,28 @@ What each format contributes:
 | HTML | the page body, through the same walker as EPUB: blocks, code and tables as in a book |
 | Word `.docx` | paragraphs, heading styles, and tables (one line per row), read straight from the zip |
 
+## Languages
+
+Every document gets a language when it is indexed: an ISO 639 code detected from its text (`en`, `es`, `pt`,
+`fr`, `de`, `it`, `nl` by their common words; Chinese, Japanese, Korean, Russian, Arabic, Greek, Hebrew, Hindi and
+Thai by their script), `und` when the text is too short or mixed to tell, and `zxx` for code projects. Set it
+yourself with `--language`:
+
+```bash
+rag index --file notas.md --db docs.db                 # detected: es
+rag index --dir informes/ --db docs.db --language es   # every file in the folder
+rag books --db docs.db                                 # 2  notas  [paper, es, text, …]
+```
+
+- **Searching by language:** `rag search --language es` (or `en,es`) keeps only documents in those languages; code
+  projects always match. Without it, every language is searched. The language shows on every result.
+- **Keywords in Spanish:** Spanish documents are matched by word stems, so "biblioteca" finds "bibliotecas" and
+  "pocion" finds "Poción". The query is read in its own language: given with `--query-language`, else the one
+  language searched or in the library, else detected, else English. English documents are searched exactly as
+  before. Other languages are matched by their words as written, with accents ignored.
+- **Meaning search across languages** needs a multilingual model, chosen in a later phase; until then each
+  document is embedded with the same model as before.
+
 ## See what would be stored
 
 `rag structure --file <document>` prints the sections and passages a document would get, without storing

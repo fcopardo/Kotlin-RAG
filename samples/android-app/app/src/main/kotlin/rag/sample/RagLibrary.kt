@@ -61,6 +61,7 @@ object RagLibrary {
         // first use (so indexing reads each book before the model takes memory). Without the files the app
         // still works, with keyword search only.
         val provider = RagModels.provider(context, File(context.getExternalFilesDir(null), "models"))
-        return RagEngine(context, File(context.filesDir, "library.db"), ModelPolicies.current, provider)
+        // Queries are taken to be in the phone's language unless the search says otherwise (SPEC §19.4).
+        return RagEngine(context, File(context.filesDir, "library.db"), ModelPolicies.current, provider, defaultLanguage = java.util.Locale.getDefault().language.takeIf { it.length in 2..3 })
     }
 }

@@ -1264,7 +1264,7 @@ figures. Not run: `DistractorEvalTest` (needs two more book PDFs) and `OnnxParit
 Review finding: a definition clause (`1.1 Affiliate. "Affiliate" means…`) kept the definition in its title,
 because the name's end was only recognized before a capital letter. A quote before the capital now counts too.
 
-## 19. Languages: model policy, language metadata and multilingual search (Phase 10, planned 2026-11-27)
+## 19. Languages: model policy, language metadata and multilingual search (Phase 10, done 2026-11-28)
 
 ### 19.1 Why
 Which embedding model to use, and how many to keep in memory, is decided today by `RagModels.tier(DeviceMemory)`
@@ -1378,6 +1378,14 @@ changes.
   expert and `nomic` as the shared stand-in (`ModelSwapDeviceTest`): indexing an English and a Spanish document takes 2
   loads either way (3.7 s one at a time, 2.8 s two at a time); an English search then a cross-language search takes 2
   more loads one at a time and none two at a time; both loaded together use about 600 MB (PSS).
+- **Built 2026-11-28 (step 8):** the sample app's language filter (Any language, English, Spanish) and each hit's
+  language; queries in the phone's language by default (`RagEngine(…, defaultLanguage = …)`). Scripted on the Pixel 8a
+  with the Spanish book beside the English library: "varita" in Spanish finds the book's pages, in English nothing,
+  and "coroutines" in Spanish only the code. Docs: `DOCUMENTS.md` (Languages), `ANDROID.md` (policy, provider,
+  languages), README (`--language`, `--query-language`).
+- **Phase 10 gate, 2026-11-28:** every evaluation set scores as before, lexically and with Ollama (code hybrid 0.90,
+  papers 0.95, contracts 0.95; *Compose* mxbai 0.80 and nomic 0.75; *Art of War* mxbai 0.75 and nomic 0.85); Android
+  goldens identical; 25 device tests green.
 - **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.

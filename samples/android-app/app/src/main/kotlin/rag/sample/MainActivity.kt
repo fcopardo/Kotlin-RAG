@@ -34,7 +34,7 @@ import java.io.File
  * subject and kind.
  *
  * Scriptable for testing (adb shell am start -n rag.sample/.MainActivity --ez indexFolder true
- * --es query "..." --es subject "..." --es kind code): results are also logged with the tag RagSample.
+ * --es query "..." --es subject "..." --es kind code --es language es): results are also logged with the tag RagSample.
  */
 class MainActivity : ComponentActivity() {
 
@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var query: EditText
     private lateinit var subject: EditText
     private lateinit var kindFilter: Spinner
+    private lateinit var languageFilter: Spinner
 
     private val pickBook = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::importAndIndex) }
 
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
             query.setText(q)
             subject.setText(i.getStringExtra("subject").orEmpty())
             KINDS.indexOfFirst { it.second == i.getStringExtra("kind") }.takeIf { it > 0 }?.let { kindFilter.setSelection(it) }
+            LANGUAGES.indexOfFirst { it.second == i.getStringExtra("language") }.takeIf { it > 0 }?.let { languageFilter.setSelection(it) }
             search(openResult = i.getIntExtra("openResult", -1).takeIf { it >= 0 })
         }
     }
@@ -179,19 +181,20 @@ class MainActivity : ComponentActivity() {
         val q = query.text.toString().trim().takeIf { it.isNotEmpty() } ?: return
         val s = subject.text.toString().trim().takeIf { it.isNotEmpty() }
         val kind = KINDS[kindFilter.selectedItemPosition].second
+        val languages = LANGUAGES[languageFilter.selectedItemPosition].second?.let { listOf(it) }
         lifecycleScope.launch {
             resultList.removeAllViews()
             try {
                 val engine = RagLibrary.engine(this@MainActivity)
                 val started = System.nanoTime()
                 val sections: Map<String, List<Hit>> =
-                    if (kind != null) mapOf(kind to engine.search(q, k = 5, subject = s, kind = kind))
-                    else engine.searchByKind(q, kPerKind = 3, subject = s)
+                    if (kind != null) mapOf(kind to engine.search(q, k = 5, subject = s, kind = kind, languages = languages))
+                    else engine.searchByKind(q, kPerKind = 3, subject = s, languages = languages)
                 val ms = (System.nanoTime() - started) / 1_000_000
                 val hits = sections.values.flatten()
                 val headed = kind == null && sections.size > 1
                 results.text = if (hits.isEmpty()) "No results ($ms ms)." else "${hits.size} results in $ms ms. Tap one to open it."
-                val log = StringBuilder("query '$q' subject '$s' kind '$kind': ${results.text}")
+                val log = StringBuilder("query '$q' subject '$s' kind '$kind' languages $languages: ${results.text}")
                 sections.forEach { (k, kindHits) ->
                     if (headed) {
                         resultList.addView(sectionHeader(k))
@@ -199,7 +202,7 @@ class MainActivity : ComponentActivity() {
                     }
                     kindHits.forEach { hit ->
                         resultList.addView(resultView(hit))
-                        log.append("\n").append(citation(hit))
+                        log.append("\n").append(citation(hit)).append(" [").append(hit.language).append("]")
                     }
                 }
                 Log.i(TAG, log.toString())
@@ -229,7 +232,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun resultView(hit: Hit) = TextView(this).apply {
-        text = "${citation(hit)} [${hit.matchType}]\n${(hit.summary ?: hit.paragraph.text).take(300)}"
+        text = "${citation(hit)} [${hit.matchType}, ${hit.language}]\n${(hit.summary ?: hit.paragraph.text).take(300)}"
         setPadding(0, 24, 0, 24)
         isClickable = true
         // The system's ripple, so a tap shows.
@@ -264,13 +267,16 @@ class MainActivity : ComponentActivity() {
         kindFilter = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, KINDS.map { it.first })
         }
+        languageFilter = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, LANGUAGES.map { it.first })
+        }
         val pick = Button(this).apply { text = "Add a book, document or source file"; setOnClickListener { pickBook.launch(BOOK_TYPES) } }
         val folder = Button(this).apply { text = "Index the books folder"; setOnClickListener { indexFolder() } }
         val go = Button(this).apply { text = "Search"; setOnClickListener { search() } }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 48)
-            listOf(status, pick, folder, query, subject, kindFilter, go, results, resultList).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+            listOf(status, pick, folder, query, subject, kindFilter, languageFilter, go, results, resultList).forEach { addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
         }
         setContentView(ScrollView(this).apply { addView(column) }.also(BookViewerActivity::padForSystemBars))
     }
@@ -297,5 +303,8 @@ class MainActivity : ComponentActivity() {
 
         /** The kind filter's entries: label, and the kind passed to search (null = everything, the default). */
         private val KINDS = listOf("All" to null, "Books" to "book", "Papers" to "paper", "Contracts" to "contract", "Code" to "code")
+
+        /** The language filter's entries: label, and the language passed to search (null = every language). Code always matches. */
+        private val LANGUAGES = listOf("Any language" to null, "English" to "en", "Spanish" to "es")
     }
 }

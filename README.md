@@ -94,6 +94,7 @@ rag index --project <folder> --db <file> [options]   # a code project as one doc
 | `--location-size` | `2000` | EPUB without a page list: characters per location. |
 | `--reindex` | off | Rebuild a book that is already indexed. |
 | `--no-embed` | off | Store the structure only; run `rag embed` later. |
+| `--language` | detected | The document's language as an ISO 639 code (`en`, `es`…), instead of detecting it. Code projects are `zxx` (no language). |
 | `--embed-model` | `mxbai-embed-large` | Ollama embedding model. `nomic-embed-text` is a lighter alternative. |
 | `--embed-dim` | `512` | Dimensions kept per vector (multiple of 64, at most the model's size). |
 | `--ollama-url` | `http://localhost:11434` | Ollama server. |
@@ -139,6 +140,8 @@ rag search --db <file> -q "<question or text>" [options]
 | `--k` | `5` | Number of results. |
 | `--book` | all books | Only search this book id. |
 | `--subject` | all books | Only books about this subject, by name or meaning (see [`rag subjects`](#rag-subjects-what-a-book-is-about)). |
+| `--language` | all languages | Only documents in these languages, e.g. `en` or `en,es`. Code projects always match. |
+| `--query-language` | detected | The language the query is written in, for keyword search in languages other than English (Spanish words are matched by their stem). |
 | `--mode` | `hybrid` | `hybrid` (keywords + meaning), `lexical` (keywords only, no Ollama needed) or `vector` (meaning only). |
 | `--json` | off | Print results as JSON, for scripts and LLM tools. |
 | `--embed-model` | the model the books were embedded with | Override the query embedding model. |
