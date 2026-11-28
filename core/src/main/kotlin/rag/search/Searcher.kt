@@ -9,6 +9,8 @@ import rag.embed.Vectors
 import rag.extract.Normalizer
 import rag.index.UnitKind
 import rag.language.DocumentLanguages
+import rag.language.LanguageDetector
+import rag.language.KeywordAnalysis
 import rag.store.BookRow
 import rag.store.SqliteStore
 import rag.store.StoredUnit
@@ -102,6 +104,11 @@ class Searcher(
      * the calibrated value for the embedder's model ([SUBJECT_MATCH]); without one, names only.
      */
     private val subjectMatch: Double? = null,
+    /**
+     * The language queries are written in when a search doesn't say (SPEC §19.4): counts as the caller stating it.
+     * Null: a one-language search uses that language, else the query's detected language, else English.
+     */
+    private val defaultLanguage: String? = null,
 ) {
     private val mismatchWarned = HashSet<Long>()
 
@@ -143,7 +150,36 @@ class Searcher(
     /** Bytes of 1-bit vectors cached right now (for tests and memory reports). */
     val cachedBitsBytes: Long get() = bitsCache.size
 
-    private class QueryContext(val text: String, val terms: String?, val vector: FloatArray?)
+    /**
+     * [terms]: the any-term query for the English keyword tables; [termsX]: for the other languages' tables, in the
+     * query's language (null when no book in scope uses them); [languages]: each book in scope's language.
+     */
+    private class QueryContext(
+        val text: String,
+        val terms: String?,
+        val vector: FloatArray?,
+        val termsX: String? = null,
+        val languages: Map<Long, String> = emptyMap(),
+    )
+
+    /**
+     * The language [query] is written in (SPEC §19.4): the caller's [stated] one, else [defaultLanguage], else the only
+     * language searched (code aside), else the only language of the [books] in scope, else the detected one, else
+     * English.
+     */
+    private fun queryLanguage(query: String, stated: String?, wanted: Set<String>?, books: List<BookRow>): String =
+        stated?.let(DocumentLanguages::normalize)
+            ?: defaultLanguage?.let(DocumentLanguages::normalize)
+            ?: wanted?.filter { it != DocumentLanguages.NONE }?.singleOrNull()
+            ?: books.map { it.language }.filter { it != DocumentLanguages.NONE && it != LanguageDetector.UNDETERMINED }.distinct().singleOrNull()
+            ?: LanguageDetector.detect(query).takeIf { it != LanguageDetector.UNDETERMINED }
+            ?: "en"
+
+    private fun context(query: String, vector: FloatArray?, books: List<BookRow>, stated: String?, wanted: Set<String>?): QueryContext {
+        val other = books.any { !KeywordAnalysis.usesEnglishTables(it.language) }
+        val termsX = if (other) KeywordAnalysis.anyTerm(query, queryLanguage(query, stated, wanted, books)) else null
+        return QueryContext(query, FtsQuery.anyTerm(query), vector, termsX, books.associate { it.id to it.language })
+    }
 
     /**
      * @param subject only books about this (SPEC §8.5): a subject named by these words, or close in
@@ -159,6 +195,8 @@ class Searcher(
         kind: String? = null,
         /** Only documents in these languages (ISO 639 codes); code projects ("zxx") always match. Null: all (SPEC §19.4). */
         languages: Collection<String>? = null,
+        /** The language [query] is written in, for keyword search in other languages than English (SPEC §19.4). */
+        queryLanguage: String? = null,
     ): List<Hit> {
         require(k > 0) { "k must be positive" }
         val inScope = if (bookId != null) listOfNotNull(store.book(bookId)) else store.books()
@@ -169,7 +207,7 @@ class Searcher(
         val n = maxOf(4 * k, 20)
 
         val vector = if (mode == Mode.LEXICAL) null else queryVector(query, books, required = mode == Mode.VECTOR)
-        val context = QueryContext(query, FtsQuery.anyTerm(query), vector)
+        val context = context(query, vector, books, queryLanguage, wanted)
 
         val bookIds = if (books.size < inScope.size) books.map { it.id } else null
         return rankHits(query, books, vector, context.terms, bookId, k, n, mode, context, bookIds)
@@ -198,6 +236,8 @@ class Searcher(
         subject: String? = null,
         /** Only documents in these languages, as in [search]. */
         languages: Collection<String>? = null,
+        /** The language [query] is written in, as in [search]. */
+        queryLanguage: String? = null,
     ): Map<String, List<Hit>> {
         require(kPerKind > 0) { "kPerKind must be positive" }
 
@@ -210,8 +250,8 @@ class Searcher(
 
         // 2. Build the query vector and keyword terms once over all books in scope.
         val vector = if (mode == Mode.LEXICAL) null else queryVector(query, booksInScope, required = mode == Mode.VECTOR)
-        val terms = FtsQuery.anyTerm(query)
-        val context = QueryContext(query, terms, vector)
+        val context = context(query, vector, booksInScope, queryLanguage, wanted)
+        val terms = context.terms
 
         // 3. Determine which kinds to search, in DocumentKinds.ALL order, narrowed by [kinds].
         val searchKinds = if (kinds == null) DocumentKinds.ALL
@@ -227,6 +267,24 @@ class Searcher(
             if (hits.isNotEmpty()) result[dk.name] = hits
         }
         return result
+    }
+
+    /**
+     * Keyword hits, best first. Books in English, undetermined or code: one BM25 query over the porter tables, as before
+     * (when every book in scope is one of those, this is exactly the old search). Books in other languages: one query over
+     * the "_x" tables with the query prepared in its language. The two lists' BM25 scores aren't comparable, so they are
+     * merged by rank, alternating, starting with the English list.
+     */
+    private fun lexicalSearch(books: List<BookRow>, terms: String?, termsX: String?, bookId: Long?, n: Int, bookIds: List<Long>?): List<Long> {
+        val (english, other) = books.partition { KeywordAnalysis.usesEnglishTables(it.language) }
+        if (other.isEmpty()) {
+            // One query over every book in scope, so hits are ranked by relevance, not by book.
+            return if (terms == null) emptyList() else store.ftsSearch("para_fts", terms, bookId = bookId, limit = n, bookIds = bookIds)
+        }
+        val a = if (terms == null || english.isEmpty()) emptyList()
+        else store.ftsSearch("para_fts", terms, bookId = bookId, limit = n, bookIds = english.map { it.id })
+        val b = if (termsX == null) emptyList() else store.ftsSearch("para_fts_x", termsX, bookId = bookId, limit = n, bookIds = other.map { it.id })
+        return (0 until maxOf(a.size, b.size)).flatMap { i -> listOfNotNull(a.getOrNull(i), b.getOrNull(i)) }.distinct().take(n)
     }
 
     private fun languageSet(languages: Collection<String>?): Set<String>? =
@@ -255,9 +313,7 @@ class Searcher(
         // A one-sentence paragraph and its phrase share a hash: keep one hit per paragraph.
         val exact = exactHits(query, books, context).distinctBy { it.second }
 
-        val lexical = if (mode == Mode.VECTOR || terms == null) emptyList()
-        // One query over every book in scope, so hits are ranked by relevance, not by book.
-        else store.ftsSearch("para_fts", terms, bookId = bookId, limit = n, bookIds = bookIds)
+        val lexical = if (mode == Mode.VECTOR) emptyList() else lexicalSearch(books, terms, context.termsX, bookId, n, bookIds)
         val dense = vector?.let { v -> vectorSearch(v, books, n) }.orEmpty()
 
         val summaries = if (includeSummaries) summaryRanking(context, books, mode, n) else emptyList()
@@ -481,9 +537,10 @@ class Searcher(
     private fun closestPhrase(paragraph: StoredUnit, context: QueryContext): StoredUnit {
         val phrases = store.children(paragraph.id)
         if (phrases.size <= 1) return phrases.firstOrNull() ?: paragraph
-        context.terms?.let { terms ->
+        val english = KeywordAnalysis.usesEnglishTables(context.languages[paragraph.bookId] ?: LanguageDetector.UNDETERMINED)
+        (if (english) context.terms else context.termsX)?.let { terms ->
             val rowids = phrases.minOf { it.id }..phrases.maxOf { it.id }
-            store.ftsSearch("phrase_fts", terms, parentId = paragraph.id, limit = 1, rowids = rowids).firstOrNull()?.let { id ->
+            store.ftsSearch(if (english) "phrase_fts" else "phrase_fts_x", terms, parentId = paragraph.id, limit = 1, rowids = rowids).firstOrNull()?.let { id ->
                 return phrases.first { it.id == id }
             }
         }

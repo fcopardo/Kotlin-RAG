@@ -55,6 +55,8 @@ class RagEngine(
      * S25, 100 books searched in 38 ms with it and in 414 ms with 4 MB, so small phones use it too.
      */
     private val bitsCacheBytes: Long = Searcher.BITS_CACHE_BYTES,
+    /** The language queries are written in unless a search says (SPEC §19.4), e.g. the app's language; null: detect. */
+    private val defaultLanguage: String? = null,
 ) : Closeable {
 
     /**
@@ -89,7 +91,7 @@ class RagEngine(
     private fun searcher(): Searcher {
         val embedder = provider.embedder()
         searchers[embedder?.model]?.let { (e, s) -> if (e === embedder) return s }
-        return Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes)
+        return Searcher(store, embedder, warn = { android.util.Log.w(TAG, it) }, keywordsOnModelMismatch = true, bitsCacheBytes = bitsCacheBytes, defaultLanguage = defaultLanguage)
             .also { searchers[embedder?.model] = embedder to it }
     }
 
@@ -147,8 +149,10 @@ class RagEngine(
         kind: String? = null,
         /** Only documents in these languages (ISO 639 codes); code always matches. Null: all (SPEC §19.4). */
         languages: Collection<String>? = null,
+        /** The language [query] is written in; null: the engine's default language, else detected (SPEC §19.4). */
+        queryLanguage: String? = null,
     ): List<Hit> = locked {
-        searcher().search(query, k, bookId, mode, subject, kind, languages)
+        searcher().search(query, k, bookId, mode, subject, kind, languages, queryLanguage)
     }
 
     /**
@@ -162,8 +166,9 @@ class RagEngine(
         mode: Mode = Mode.HYBRID,
         subject: String? = null,
         languages: Collection<String>? = null,
+        queryLanguage: String? = null,
     ): Map<String, List<Hit>> = locked {
-        searcher().searchByKind(query, kPerKind, kinds, mode, subject, languages)
+        searcher().searchByKind(query, kPerKind, kinds, mode, subject, languages, queryLanguage)
     }
 
     /** [sectionText] of [hit]'s section and paragraph. */

@@ -7,6 +7,7 @@ import rag.embed.Quantizer
 import rag.index.UnitKeys
 import rag.index.UnitKind
 import rag.language.DocumentLanguages
+import rag.language.KeywordAnalysis
 import rag.language.LanguageDetector
 import rag.summarize.BookSubject
 import rag.summarize.Subjects
@@ -113,7 +114,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         migrate()
         // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;
         // book subjects and vectors are 5 (new tables only, created above); the document kind is 6 (§18.3);
-        // code projects' files are 7 (§18.3, a new table only); the document language is 8 (§19.4).
+        // code projects' files are 7 (§18.3, a new table only); the document language is 8 (§19.4); keyword tables for
+        // languages other than English are 9 (§19.4).
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -124,6 +126,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
      * Detected by columns, since databases from before `user_version` was set report version 0.
      */
     private fun migrate() {
+        val version = query("PRAGMA user_version") { it.int(1) }.single()
         val pageColumns = columns("page")
         if ("pdf_page" in pageColumns) {
             update("ALTER TABLE page RENAME COLUMN pdf_page TO page_no")
@@ -145,6 +148,24 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
                 val language = if (kind == DocumentKinds.CODE.name) DocumentLanguages.NONE
                 else LanguageDetector.detectDocument(query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.single())
                 update("UPDATE book SET language = ? WHERE id = ?", language, id)
+            }
+        }
+        // Version 8 → 9 (SPEC §19.4): a document in a language other than English moves from the porter keyword
+        // tables to the "_x" ones, its text prepared for its language. Earlier versions too: their books just got
+        // their language above.
+        if (version < 9) transaction {
+            val books = query("SELECT id, language FROM book ORDER BY id") { it.long(1) to it.string(2)!! }
+                .filterNot { KeywordAnalysis.usesEnglishTables(it.second) }
+            for ((id, language) in books) {
+                val text = query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.single()
+                for ((kind, suffix) in listOf("g" to "para", "p" to "phrase")) {
+                    val units = query("SELECT id, char_start, char_end FROM unit WHERE book_id = ? AND kind = ?", id, kind) {
+                        Triple(it.long(1), it.int(2), it.int(3))
+                    }
+                    update("DELETE FROM ${suffix}_fts WHERE rowid IN (SELECT id FROM unit WHERE book_id = ? AND kind = ?)", id, kind)
+                    batch("INSERT INTO ${suffix}_fts_x(rowid, text) VALUES (?, ?)",
+                        units.map { (u, s, e) -> listOf(u, KeywordAnalysis.indexText(text.substring(s, e + 1), language)) })
+                }
             }
         }
         // Version 2 → 3 (summaries, SPEC §5.7): progress columns, and the full summary table.
@@ -239,7 +260,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         )
         batch("INSERT INTO page(book_id, page_no, char_start, label) VALUES (?,?,?,?)",
             structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
-        insertUnits(bookId, structured)
+        insertUnits(bookId, structured, DocumentLanguages.normalize(language))
         setSubjects(bookId, "metadata", Subjects.fromMetadata(structured.subjects))
         if (structured.projectFiles.isNotEmpty()) {
             batch("INSERT INTO project_file(book_id, path, sha256, char_start, char_end) VALUES (?,?,?,?,?)",
@@ -254,6 +275,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         // Contentless FTS rows aren't linked by foreign keys: delete them by rowid first.
         update("DELETE FROM para_fts WHERE rowid IN (SELECT id FROM unit WHERE book_id = ? AND kind = 'g')", id)
         update("DELETE FROM phrase_fts WHERE rowid IN (SELECT id FROM unit WHERE book_id = ? AND kind = 'p')", id)
+        update("DELETE FROM para_fts_x WHERE rowid IN (SELECT id FROM unit WHERE book_id = ? AND kind = 'g')", id)
+        update("DELETE FROM phrase_fts_x WHERE rowid IN (SELECT id FROM unit WHERE book_id = ? AND kind = 'p')", id)
         update("DELETE FROM summary_fts WHERE rowid IN (SELECT id FROM summary WHERE book_id = ?)", id)
         update("DELETE FROM book WHERE id = ?", id)
     }
@@ -262,7 +285,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
      * Inserts the book's units with ids assigned here (one writer per database), so parents are
      * known before their children are written and everything can go in batches on any driver.
      */
-    private fun insertUnits(bookId: Long, structured: StructuredBook) {
+    private fun insertUnits(bookId: Long, structured: StructuredBook, language: String) {
         val text = structured.book.text
         val records = UnitKeys.build(structured, bookId)
         val base = query("SELECT coalesce(max(id), 0) FROM unit") { it.long(1) }.first()
@@ -275,10 +298,14 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
                     r.ordinal, r.start, r.end, r.pageStart, r.pageEnd, r.title, if (r.isCode) 1 else 0)
             },
         )
+        // English, undetermined text and code: the porter tables, as before. Other languages: the "_x" tables, with
+        // their text prepared in Kotlin (SPEC §19.4).
+        val english = KeywordAnalysis.usesEnglishTables(language)
         fun fts(kind: UnitKind) = records.indices.filter { records[it].kind == kind }
-            .map { i -> listOf(ids[i], text.substring(records[i].start, records[i].end + 1)) }
-        batch("INSERT INTO para_fts(rowid, text) VALUES (?, ?)", fts(UnitKind.PARAGRAPH))
-        batch("INSERT INTO phrase_fts(rowid, text) VALUES (?, ?)", fts(UnitKind.PHRASE))
+            .map { i -> text.substring(records[i].start, records[i].end + 1).let { t -> listOf(ids[i], if (english) t else KeywordAnalysis.indexText(t, language)) } }
+        val suffix = if (english) "" else "_x"
+        batch("INSERT INTO para_fts$suffix(rowid, text) VALUES (?, ?)", fts(UnitKind.PARAGRAPH))
+        batch("INSERT INTO phrase_fts$suffix(rowid, text) VALUES (?, ?)", fts(UnitKind.PHRASE))
     }
 
     // --- units ---
@@ -335,7 +362,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         /** Narrows the FTS scan itself (e.g. one paragraph's phrases, which have consecutive ids). */
         rowids: LongRange? = null,
     ): List<Long> {
-        require(table in setOf("para_fts", "phrase_fts")) { "unknown FTS table $table" }
+        require(table in setOf("para_fts", "phrase_fts", "para_fts_x", "phrase_fts_x")) { "unknown FTS table $table" }
         val filters = buildList {
             if (bookId != null) add("u.book_id = ?")
             if (parentId != null) add("u.parent_id = ?")
@@ -618,7 +645,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 8
+        const val SCHEMA_VERSION = 9
 
         /**
          * Every book column except `text`: reading a book row must not pull the whole book off disk
@@ -755,6 +782,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS para_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
             CREATE VIRTUAL TABLE IF NOT EXISTS phrase_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61');
+            CREATE VIRTUAL TABLE IF NOT EXISTS para_fts_x USING fts5(text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');
+            CREATE VIRTUAL TABLE IF NOT EXISTS phrase_fts_x USING fts5(text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');
             CREATE VIRTUAL TABLE IF NOT EXISTS summary_fts USING fts5(text, content='', contentless_delete=1, tokenize='porter unicode61')
         """.trimIndent()
     }

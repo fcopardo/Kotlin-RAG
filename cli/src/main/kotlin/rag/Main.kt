@@ -230,6 +230,8 @@ internal class SearchCommand : CliktCommand(name = "search") {
     val mode by option("--mode", help = "hybrid | lexical | vector").choice("hybrid", "lexical", "vector").default("hybrid")
     val subject by option("--subject", help = "Only books about this subject (see `rag books`, `rag subjects`)")
     val kind by option("--kind", help = "Only documents of this kind: ${DocumentKinds.ALL.joinToString(", ") { it.name }}")
+    val queryLanguage by option("--query-language", help = "The language the query is written in (ISO 639), for keyword search in other languages than English; default: detected")
+        .convert { runCatching { DocumentLanguages.normalize(it) }.getOrElse { e -> fail(e.message!!) } }
     val languages by option("--language", help = "Only documents in these languages: ISO 639 codes, comma-separated (e.g. en,es); code always matches")
         .convert { v -> v.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { runCatching { DocumentLanguages.normalize(it) }.getOrElse { e -> fail(e.message!!) } } }
     val json by option("--json", help = "Print results as JSON").flag()
@@ -252,7 +254,7 @@ internal class SearchCommand : CliktCommand(name = "search") {
         }
         val embedder = if (mode == "lexical" || model == null) null else embedderFor(model, ollamaUrl, onnxDir)
         val hits = Searcher(store, embedder, lexicalWeight = lexicalWeight, rrfK = rrfK, includeSummaries = !noSummaries, frontMatterWeight = frontMatterWeight, summaryWeight = summaryWeight, maxSummaryHits = maxSummaryHits)
-            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject, kind, languages)
+            .search(query, k, book, Mode.valueOf(mode.uppercase()), subject, kind, languages, queryLanguage)
         if (json) {
             echo(Json { prettyPrint = true }.encodeToString(hits))
             return@use

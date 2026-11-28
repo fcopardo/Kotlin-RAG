@@ -1357,6 +1357,17 @@ changes.
   `rag search --language en,es`; `language=en,es` on the HTTP API; `languages` on the MCP `search_books` tool. Codes
   are normalized (case, spaces) and checked; a document matches when its language is in the set, and a code project
   (`zxx`) always matches.
+- **Built 2026-11-28 (step 6):** keyword search per language. English, undetermined text and code keep the porter
+  tables (`para_fts`, `phrase_fts`), so their results are unchanged (Android goldens identical; the English-only results
+  of a library are the same with a Spanish book added). Other languages use `para_fts_x` and `phrase_fts_x`
+  (`unicode61`, accents folded), whose text `KeywordAnalysis` prepares in Kotlin: each word lower-cased, followed by its
+  stem for Spanish (`SpanishStemmer`, a port of Snowball's, checked against 7,095 words of Snowball's reference output).
+  A query for those tables is prepared in the query's language: stated per search (`queryLanguage`, `rag search
+  --query-language`), else the engine's or searcher's default language, else the only language searched, else the only
+  language in scope, else detected, else English; a query in another language still matches words as written. The two
+  keyword lists are merged by rank (BM25 scores of different tables aren't comparable). Schema version 9 moves existing
+  non-English books to the new tables. On the Spanish book (430 pages): "varita" finds "varitas", "pocion" finds "Poción".
+  Found on the way: that book's chapters aren't detected (one chapter "by fallback"); its headings are Spanish.
 - **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.
