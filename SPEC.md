@@ -1263,3 +1263,73 @@ figures. Not run: `DistractorEvalTest` (needs two more book PDFs) and `OnnxParit
 
 Review finding: a definition clause (`1.1 Affiliate. "Affiliate" means…`) kept the definition in its title,
 because the name's end was only recognized before a capital letter. A quote before the capital now counts too.
+
+## 19. Model policy and provider; languages (Phase 10, planned 2026-11-27)
+
+### 19.1 Why
+Which embedding model to use, and how many to keep in memory, is decided today by `RagModels.tier(DeviceMemory)`
+and the app: the app opens one `OnnxEmbedder` and passes it to `RagEngine`, which uses it for its whole life
+(§15.9, §15.10). That is enough for one model per device. The language plan (§19.4) needs several models per
+device, loaded together when memory allows and one after another when it doesn't. The rules for that should be
+testable without loading a model, and replaceable, for example to force one model at a time on a device that could
+hold two.
+
+### 19.2 Design
+Three roles, each in its own class:
+
+- **`ModelPolicy`: the rules, nothing else.** Pure decisions over plain inputs: given the device's memory, the
+  models available and what a search or an indexing run needs, which models to use, whether they stay loaded
+  together or are swapped, and in what order; the ONNX settings per model. No loading, no I/O, so a ruleset is
+  tested with made-up devices (as `RagModels.tier` is today with fake 4, 6 and 12 GB phones). The default policy
+  reproduces today's behaviour exactly (§15.9: large tier at 5 GiB and not low-RAM, `mxbai-embed-large` int8;
+  otherwise `nomic-embed-text` int8 with the CPU arena off). A forced policy replaces it, e.g. "one model at a
+  time" or "always the small model", whatever the device.
+- **`ModelProvider`: loading and unloading.** Opens and closes embedders from model files, following the policy it
+  is given. It owns what it loads (opening, closing, and how many are open at once); it doesn't decide which.
+- **`RagEngine`: uses what it is given.** It takes a policy and a provider, hands the policy to the provider, and
+  asks the provider for the embedder(s) an operation needs. It holds no model rules. The engine's search state that
+  is per model (the vector cache, `Searcher`) is keyed by model, so a model that is swapped out and back in finds its
+  cache.
+
+The policy stays called from where the rules are called today: `RagModels.tier`, `model`, `sessionOptions` and
+`forDevice` delegate to the default policy, so apps and tests that use them keep working. `RagEngine`'s current
+constructor (one embedder, or none) stays, as a fixed provider with a single model; the new constructor takes the
+policy and the provider.
+
+The interfaces are platform-neutral (`core`); the device-memory reading and the ONNX provider are Android's
+(`:android`). The desktop CLI keeps choosing its model by flags (`--embed-model`, `--onnx-dir`); it can adopt a
+policy later if it needs one.
+
+### 19.3 Steps (each ends with passing tests)
+1. **Isolate the policy, no behaviour change.** `ModelPolicy` and the default policy hold today's rules; `RagModels`
+   delegates to it. Tests: the tier rule's existing cases through the policy, and a forced policy overriding it.
+   Gate: everything unchanged (Android goldens byte-identical, device tests green).
+2. **The provider and the engine's new constructor.** `ModelProvider` with an ONNX implementation; `RagEngine(context,
+   dbFile, policy, provider)`; the old constructor as a fixed provider. Tests: a fake provider records loads and
+   unloads; the engine asks for what each operation needs; a swap-only policy never has two models open; the sample
+   app switches to the new constructor and behaves the same.
+3. **Language steps (§19.4)**, planned separately once the evaluation sets in step 4 of that plan exist.
+
+### 19.4 Languages: direction (decided 2026-11-27, to be measured)
+- **Language is document metadata**, detected once at index time and stored like the kind. A search takes all
+  languages (the default) or a subset, and every hit shows its language. The user decides per search whether, say,
+  a legal question should cross languages: legal meaning follows jurisdiction, and the language stands in for it
+  (a `jurisdiction` field for legal kinds may follow). Lookup (`HitLocator`, `sectionText`) is unaffected: it works
+  from stored text and offsets, never from vectors.
+- **No translation, of documents or of queries.** Documents are stored and cited in their own wording (offsets
+  into the original text). Translating the query would turn translation errors into search errors, so it is not
+  used.
+- **Models:** an expert model for English (as today) and one for Spanish; a shared multilingual (or bilingual)
+  model for every other language and for every search that crosses languages, since only a shared vector space
+  lets a question in one language find passages in another. A document in English or Spanish therefore has two
+  vector sets: its expert model's, and the shared model's (about 600 bytes per paragraph per set). Keyword search
+  stays per language: in a cross-language search it only matches documents in the question's language.
+- **Memory on phones (the policy's job):** a device that can hold two models keeps the expert and the shared model
+  loaded together; a tight one searches with one, keeps the results, swaps, searches with the other and merges.
+  Results from different models are merged by rank, never by score. Loading costs about 0.6 s per model on the
+  S25 (large tier, ≈ 390 MB loaded; small tier ≈ 180 MB).
+- **Before choosing models:** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
+  Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
+  (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.
+- **Search rework (query rewriting, re-ranking) comes after**, tuned once on the final models: weights and prompts
+  tuned for the current English-only setup would not carry over.
