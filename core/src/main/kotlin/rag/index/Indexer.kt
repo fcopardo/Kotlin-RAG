@@ -5,6 +5,7 @@ import rag.RagException
 import rag.ReadOptions
 import rag.embed.Embedder
 import rag.embed.Quantizer
+import rag.language.DocumentLanguages
 import rag.store.SqliteStore
 import java.io.File
 import java.nio.file.Files
@@ -37,6 +38,7 @@ class Indexer(
      * Indexes [file] (a book, document, source file or project folder) unless it is already there, by its
      * fingerprint ([BookReader.fingerprint]: the file's SHA-256, or a project's), and [reindex] is false.
      * With an [embedder], it's checked before anything is committed, then paragraphs are embedded.
+     * [language] (an ISO 639 code) overrides the detected language (SPEC §19.4).
      */
     fun index(
         file: File,
@@ -45,15 +47,17 @@ class Indexer(
         embedder: Embedder? = null,
         embedDim: Int = DEFAULT_DIM,
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
+        language: String? = null,
         onBatch: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): IndexResult {
+        language?.let(DocumentLanguages::normalize)
         val sha = reader.fingerprint(file)
         val existing = store.findBookBySha(sha)
         if (existing != null && !reindex) return IndexResult(existing, skipped = true, embedded = null)
 
         embedder?.checkAvailable()
         val structured = reader.read(file, options = ReadOptions(tocPages = tocPages, locationSize = locationSize))
-        val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing)
+        val bookId = store.insertBook(structured, sha, structured.extractor, replacing = existing, language = DocumentLanguages.of(structured, language))
         val embedded = embedder?.let { embed(bookId, it, embedDim, onBatch = onBatch) }
         return IndexResult(bookId, skipped = false, embedded = embedded, skippedFiles = structured.skippedFiles)
     }
@@ -86,8 +90,11 @@ class Indexer(
         embedder: Embedder? = null,
         embedDim: Int = DEFAULT_DIM,
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
+        /** Every file's language, instead of detecting each (SPEC §19.4). */
+        language: String? = null,
         onFile: (FolderFile) -> Unit = {},
     ): List<FolderFile> {
+        language?.let(DocumentLanguages::normalize)
         // 1. Check embedder availability before anything is stored
         embedder?.checkAvailable()
 
@@ -109,7 +116,7 @@ class Indexer(
             }
 
             try {
-                val indexResult = index(file, reindex = reindex, embedder = embedder, embedDim = embedDim, locationSize = locationSize)
+                val indexResult = index(file, reindex = reindex, embedder = embedder, embedDim = embedDim, locationSize = locationSize, language = language)
                 val outcome = if (indexResult.skipped) FolderOutcome.ALREADY_INDEXED else FolderOutcome.INDEXED
                 val result = FolderFile(relPath, outcome, bookId = indexResult.bookId)
                 onFile(result)

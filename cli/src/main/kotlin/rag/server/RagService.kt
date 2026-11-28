@@ -19,6 +19,8 @@ data class BookInfo(
     val format: String,
     /** "book", "paper", "contract" or "code" (SPEC §18.2). */
     val kind: String,
+    /** ISO 639 code of its language (SPEC §19.4): "en", "es"…, "und" if unknown, "zxx" for code. */
+    val language: String,
     /** What this kind calls its levels, so a client can say "clauses" instead of "chapters". */
     val levels: LevelInfo,
     /** Number of sections: chapters for a book, clauses for a contract, files for a project. */
@@ -113,7 +115,7 @@ class RagService(
         return store.books().map { b ->
             val levels = DocumentKinds.of(b.kind).levels
             BookInfo(
-                b.id, b.title, b.format, b.kind,
+                b.id, b.title, b.format, b.kind, b.language,
                 LevelInfo(levels.root, levels.section, levels.passage, levels.fragment),
                 store.units(b.id, UnitKind.CHAPTER).size, b.models.map { it.model },
                 subjects[b.id].orEmpty().map { SubjectInfo(it.subject, weightName(it.weight)) },

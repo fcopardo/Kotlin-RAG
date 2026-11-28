@@ -57,6 +57,8 @@ data class Hit(
     val summary: String? = null,
     /** For SUMMARY hits: "section", "group", "chapter" or "book". */
     val summaryLevel: String? = null,
+    /** ISO 639 code of the document's language (SPEC §19.4): "en", "es"…, "und" if unknown, "zxx" for code. */
+    val language: String = "und",
 )
 
 /**
@@ -458,7 +460,7 @@ class Searcher(
         val chapter = store.unit(paragraph.parentId!!)!!
         val book = store.book(paragraph.bookId)!!
         val closest = phrase ?: closestPhrase(paragraph, context)
-        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title, book.pageKind, book.kind)
+        return Hit(score, type, ref(closest), ref(paragraph), chapterRef(chapter), book.id, book.title, book.pageKind, book.kind, language = book.language)
     }
 
     /** Best BM25 phrase in the paragraph; else the phrase most similar to the query; else the first. */

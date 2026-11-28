@@ -1307,7 +1307,7 @@ large tier and one on the small), `ForcedModelPolicy`, `ModelPolicies`; `ModelPr
 constructor), `CachingModelProvider` (least recently used out, room made before a load, so the limit holds while a
 model loads), `RagModels.provider(context, modelsRoot)`; `RagEngine(context, dbFile, policy, provider)`, with one
 searcher per model. The English results are unchanged: every evaluation set, lexical and with Ollama, scored the
-same before and after; the Android goldens are byte-identical. Measured on the Lenovo TB321FU tablet with the real
+same before and after; the Android goldens are byte-identical. Measured on a Pixel 8a (Android 17) with the real
 int8 models (`ModelSwapDeviceTest`, opt-in with `ragModelsDir`): loading `mxbai-embed-large` takes 1.4–1.6 s and
 adds about 320 MB (PSS), `nomic-embed-text` 0.65–0.8 s and about 140 MB; one at a time, every switch reloads and two
 are never open; two at a time, each loads once.
@@ -1348,6 +1348,11 @@ changes.
   loaded together; a tight one searches with one, keeps the results, swaps, searches with the other and merges.
   Results from different models are merged by rank, never by score. Loading costs about 0.6 s per model on the
   S25 (large tier, ≈ 390 MB loaded; small tier ≈ 180 MB).
+- **Built 2026-11-28 (step 4):** schema version 8 adds `book.language` (ISO 639: detected with
+  `LanguageDetector.detectDocument` at index time, `zxx` for code projects, `und` when unsure); `--language` on
+  `rag index` (and `language` on `Indexer.index`, `indexFolder`, `RagEngine.index`) overrides it; a version 7 database
+  gains it on opening, detected from each stored text. It shows in `rag books`, `BookInfo` (`list_books`) and on every
+  `Hit`.
 - **Choosing models (Phase 11):** evaluation sets in Spanish, plus cross-language questions, and larger English sets.
   Candidates are compared on them, desktop and phone: a Spanish–English bilingual model and multilingual ones
   (e.g. `bge-m3`, `multilingual-e5`, `embeddinggemma`) against today's English models.

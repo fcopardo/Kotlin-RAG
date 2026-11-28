@@ -31,6 +31,7 @@ import rag.index.FolderOutcome
 import rag.index.Indexer
 import rag.index.UnitKind
 import kotlinx.serialization.json.Json
+import rag.language.DocumentLanguages
 import rag.search.Evaluation
 import rag.summarize.OllamaSummarizer
 import rag.summarize.SummaryIndexer
@@ -96,6 +97,8 @@ internal class IndexCommand : EmbeddingCommand("index") {
         .int()
     val reindex by option("--reindex", help = "Rebuild the book if it's already indexed").flag()
     val noEmbed by option("--no-embed", help = "Skip embedding (run `rag embed` later)").flag()
+    val language by option("--language", help = "The document's language as an ISO 639 code (en, es…), instead of detecting it")
+        .convert { runCatching { DocumentLanguages.normalize(it) }.getOrElse { e -> fail(e.message!!) } }
 
     override fun run() {
         val isProject = project != null
@@ -116,7 +119,7 @@ internal class IndexCommand : EmbeddingCommand("index") {
         SqliteStore(db).use { store ->
             if (isDir) {
                 val indexer = Indexer(store)
-                val results = indexer.indexFolder(target, reindex, if (noEmbed) null else embedder(), embedDim, locSize) { ff ->
+                val results = indexer.indexFolder(target, reindex, if (noEmbed) null else embedder(), embedDim, locSize, language) { ff ->
                     when (ff.outcome) {
                         FolderOutcome.INDEXED -> {
                             val bookId = ff.bookId!!
@@ -141,7 +144,7 @@ internal class IndexCommand : EmbeddingCommand("index") {
                 echo("Folder: $indexed indexed, $already already indexed, $skipped skipped, $failed failed")
                 if (failed > 0) throw ProgramResult(3)
             } else {
-                val result = Indexer(store).index(target, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locSize)
+                val result = Indexer(store).index(target, tocPages, reindex, if (noEmbed) null else embedder(), embedDim, locSize, language)
                 val book = store.book(result.bookId)!!
                 val levels = DocumentKinds.of(book.kind).levels
                 if (result.skipped) {
@@ -365,7 +368,7 @@ private class SummarizeCommand : CliktCommand(name = "summarize") {
     }
 }
 
-private class BooksCommand : CliktCommand(name = "books") {
+internal class BooksCommand : CliktCommand(name = "books") {
     override fun help(context: Context) = "List indexed books."
     val db by option("--db").required()
 
@@ -378,7 +381,7 @@ private class BooksCommand : CliktCommand(name = "books") {
             val subjects = store.subjects(b.id).joinToString(", ") { "${it.subject} (${weightName(it.weight)})" }.ifEmpty { "no subjects" }
             val levels = DocumentKinds.of(b.kind).levels
             val sections = store.units(b.id, UnitKind.CHAPTER).size
-            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.kind}, ${b.format}, pages: ${b.pageKind}; " +
+            echo("${b.id}  ${b.title ?: "(untitled)"}  [${b.kind}, ${b.language}, ${b.format}, pages: ${b.pageKind}; " +
                 "$sections ${levels.section}s by ${b.chapterStrategy}; $vectors; $summaries]")
             echo("    subjects: $subjects")
         }

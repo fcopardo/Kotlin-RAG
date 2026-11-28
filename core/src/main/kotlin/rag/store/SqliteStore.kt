@@ -6,6 +6,8 @@ import rag.embed.QuantizedVector
 import rag.embed.Quantizer
 import rag.index.UnitKeys
 import rag.index.UnitKind
+import rag.language.DocumentLanguages
+import rag.language.LanguageDetector
 import rag.summarize.BookSubject
 import rag.summarize.Subjects
 import java.time.Instant
@@ -30,6 +32,8 @@ data class BookRow(
     val summaryPrompt: String? = null,
     /** "none", "partial" or "complete" (SPEC §5.7.4). */
     val summaryStatus: String = "none",
+    /** ISO 639 code of the document's language (SPEC §19.4): "en", "es"…, "und" if unknown, "zxx" for code. */
+    val language: String = LanguageDetector.UNDETERMINED,
     /**
      * Every embedding model the book has vectors for, first added first (SPEC §15.9). [embedModel],
      * [embedDim] and [embedStatus] are the first of them, the book's primary model.
@@ -109,7 +113,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         migrate()
         // SPEC §7: phases 1-5 are schema version 1; EPUB is 2; summaries are 3; several models per book are 4;
         // book subjects and vectors are 5 (new tables only, created above); the document kind is 6 (§18.3);
-        // code projects' files are 7 (§18.3, a new table only).
+        // code projects' files are 7 (§18.3, a new table only); the document language is 8 (§19.4).
         db.execute("PRAGMA user_version = $SCHEMA_VERSION")
     }
 
@@ -133,6 +137,16 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         if ("page_kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN page_kind TEXT NOT NULL DEFAULT 'pdf'")
         // Version 5 → 6 (SPEC §18.3): the document kind, which decides what a book's levels are called.
         if ("kind" !in bookColumns) update("ALTER TABLE book ADD COLUMN kind TEXT NOT NULL DEFAULT 'book'")
+        // Version 7 → 8 (SPEC §19.4): the document language, detected from each stored text (code is "zxx").
+        if ("language" !in bookColumns) transaction {
+            update("ALTER TABLE book ADD COLUMN language TEXT NOT NULL DEFAULT 'und'")
+            val ids = query("SELECT id, kind FROM book ORDER BY id") { it.long(1) to it.string(2)!! }
+            for ((id, kind) in ids) {
+                val language = if (kind == DocumentKinds.CODE.name) DocumentLanguages.NONE
+                else LanguageDetector.detectDocument(query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.single())
+                update("UPDATE book SET language = ? WHERE id = ?", language, id)
+            }
+        }
         // Version 2 → 3 (summaries, SPEC §5.7): progress columns, and the full summary table.
         if ("summary_model" !in bookColumns) {
             update("ALTER TABLE book ADD COLUMN summary_model TEXT")
@@ -204,14 +218,24 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         query("SELECT text FROM book WHERE id = ?", id) { it.string(1)!! }.firstOrNull()
             ?: throw IllegalArgumentException("no book with id $id")
 
-    /** Inserts the book with its pages, units, FTS rows and project files, replacing [replacing] if given. One transaction. */
-    fun insertBook(structured: StructuredBook, fileSha256: String, extractor: String, replacing: Long? = null): Long = transaction {
+    /**
+     * Inserts the book with its pages, units, FTS rows and project files, replacing [replacing] if given. One transaction.
+     * [language] defaults to the detected one ([DocumentLanguages.of]).
+     */
+    fun insertBook(
+        structured: StructuredBook,
+        fileSha256: String,
+        extractor: String,
+        replacing: Long? = null,
+        language: String = DocumentLanguages.of(structured),
+    ): Long = transaction {
         replacing?.let(::deleteBookRows)
         val bookId = insert(
-            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, format, page_kind, kind, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO book(file_sha256, title, text, extractor, chapter_strategy, page_offset, format, page_kind, kind, language, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             fileSha256, structured.title, structured.book.text, extractor,
             structured.plan.strategy.name.lowercase(), structured.plan.pageOffset,
-            structured.format.name.lowercase(), structured.pageKind.name.lowercase(), structured.kind, Instant.now().toString(),
+            structured.format.name.lowercase(), structured.pageKind.name.lowercase(), structured.kind,
+            DocumentLanguages.normalize(language), Instant.now().toString(),
         )
         batch("INSERT INTO page(book_id, page_no, char_start, label) VALUES (?,?,?,?)",
             structured.book.pageStarts.mapIndexed { i, start -> listOf(bookId, i + 1, start, structured.book.pageLabel(i + 1)) })
@@ -584,6 +608,7 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
         r.intOrNull("page_offset"), r.string("embed_model"), r.intOrNull("embed_dim"), r.string("embed_status")!!, r.string("created_at")!!,
         r.string("format")!!, r.string("kind")!!, r.string("page_kind")!!,
         r.string("summary_model"), r.string("summary_prompt"), r.string("summary_status")!!,
+        language = r.string("language")!!,
     )
 
     private fun storedUnit(r: SqlRow) = StoredUnit(
@@ -593,14 +618,14 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
     )
 
     companion object {
-        const val SCHEMA_VERSION = 7
+        const val SCHEMA_VERSION = 8
 
         /**
          * Every book column except `text`: reading a book row must not pull the whole book off disk
          * (100 books' rows took 116 ms with it, 11 ms without; SPEC §8.4).
          */
         private const val BOOK_COLUMNS = "id, file_sha256, title, extractor, chapter_strategy, page_offset, embed_model, " +
-            "embed_dim, embed_status, created_at, format, kind, page_kind, summary_model, summary_prompt, summary_status"
+            "embed_dim, embed_status, created_at, format, kind, page_kind, summary_model, summary_prompt, summary_status, language"
 
         /** SPEC §15.9: one vector per paragraph and model. */
         private val EMBEDDING_TABLE = """
@@ -658,7 +683,8 @@ class SqliteStore(path: String, driver: SqlDriver = SqlDriver.default()) : AutoC
               kind TEXT NOT NULL DEFAULT 'book',
               summary_model TEXT,
               summary_prompt TEXT,
-              summary_status TEXT NOT NULL DEFAULT 'none' 
+              summary_status TEXT NOT NULL DEFAULT 'none',
+              language TEXT NOT NULL DEFAULT 'und'
             );
             CREATE TABLE IF NOT EXISTS page (
               book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,

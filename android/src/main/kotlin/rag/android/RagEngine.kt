@@ -105,11 +105,13 @@ class RagEngine(
         locationSize: Int = ReadOptions.DEFAULT_LOCATION_SIZE,
         /** False stores the structure only (keyword search works); [embed] adds vectors later. */
         embed: Boolean = true,
+        /** The document's language as an ISO 639 code, instead of detecting it (SPEC §19.4). */
+        language: String? = null,
         progress: Progress = Progress { _, _ -> },
     ): IndexResult = locked {
         val context = coroutineContext
         try {
-            indexer.index(file, tocPages, reindex, provider.embedder().takeIf { embed }, embedDim, locationSize) { done, total ->
+            indexer.index(file, tocPages, reindex, provider.embedder().takeIf { embed }, embedDim, locationSize, language) { done, total ->
                 context.ensureActive()
                 progress.onBatch(done, total)
             }
